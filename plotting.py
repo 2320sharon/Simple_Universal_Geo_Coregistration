@@ -70,20 +70,18 @@ def plot_ssim_scores_dev(result_json_path, output_dir):
 
         # plt.tight_layout(rect=[0, 0, 0.85, 1])  # Adjust the layout to make space for the legend
         plt.tight_layout()  # Adjust the layout to make space for the legend
-        plt.savefig(os.path.join(output_dir, 'ssim_scatter_plot.png'))
-        print(f"Plot saved to {os.path.join(output_dir, 'ssim_scatter_plot.png')}")
+        plt.savefig(os.path.join(output_dir, 'dev_ssim_scatter_plot.png'))
+        print(f"Plot saved to {os.path.join(output_dir, 'dev_ssim_scatter_plot.png')}")
 
 
 
-def plot_ssim_scores(result_json_path, output_dir):
+def plot_delta_ssim_scores(result_json_path, output_dir):
     with open(result_json_path, 'r') as json_file:
         results = json.load(json_file)
 
          # Initialize counters for each category
         counts = {
-            'no_valid_window': 0,
             'shift_exceeded': 0,
-            'no_shift': 0,
             'success': 0,
             'failed': 0
         }
@@ -94,13 +92,13 @@ def plot_ssim_scores(result_json_path, output_dir):
             if key == 'file_inputs' or 'settings' in key:
                 continue
             if "shift exceeded" in value['description']:
-                ax.scatter(value['change_ssim'], color='orange')  # bad shift
+                ax.scatter(value['coregistered_ssim'],value['change_ssim'], color='orange')  # bad shift
                 counts['shift_exceeded'] += 1
             elif value['success'] == 'True':
-                ax.scatter(value['change_ssim'], color='green')
+                ax.scatter(value['coregistered_ssim'],value['change_ssim'], color='green')
                 counts['success'] += 1
             else:
-                ax.scatter(value['change_ssim'], color='red')  # the shift made the coregistered image worse
+                ax.scatter(value['coregistered_ssim'],value['change_ssim'], color='red')  # the shift made the coregistered image worse
                 counts['failed'] += 1
 
         # Create custom legend with counts
@@ -110,14 +108,14 @@ def plot_ssim_scores(result_json_path, output_dir):
 
         ax.legend(handles=[ orange_patch,  green_patch, red_patch], loc='center left', bbox_to_anchor=(1, 0.5))
 
-        # ax.set_xlabel('Original SSIM')
-        # ax.set_ylabel('Coregistered SSIM')
-        ax.set_title('Delta SSIM')
+        ax.set_xlabel('Coregistered SSIM')
+        ax.set_ylabel('delta SSIM')
+        ax.set_title('Delta SSIM vs Coregistered SSIM')
 
         # plt.tight_layout(rect=[0, 0, 0.85, 1])  # Adjust the layout to make space for the legend
         plt.tight_layout()  # Adjust the layout to make space for the legend
-        plt.savefig(os.path.join(output_dir, 'ssim_scatter_plot.png'))
-        print(f"Plot saved to {os.path.join(output_dir, 'ssim_scatter_plot.png')}")
+        plt.savefig(os.path.join(output_dir, 'delta_ssim_scatter_plot.png'))
+        print(f"Plot saved to {os.path.join(output_dir, 'delta_ssim_scatter_plot.png')}")
 
 
 def plot_ssim_scores(result_json_path, output_dir):
@@ -163,6 +161,112 @@ def plot_ssim_scores(result_json_path, output_dir):
         plt.tight_layout()  # Adjust the layout to make space for the legend
         plt.savefig(os.path.join(output_dir, 'ssim_scatter_plot.png'))
         print(f"Plot saved to {os.path.join(output_dir, 'ssim_scatter_plot.png')}")
+
+
+
+def plot_x_y_delta_ssim_scatter(result_json_path, output_dir):
+    with open(result_json_path, 'r') as json_file:
+        results = json.load(json_file)
+
+    # Initialize counters for each category
+    counts = {
+        'no_valid_window': 0,
+        'shift_exceeded': 0,
+        'no_shift': 0,
+        'success': 0,
+        'failed': 0
+    }
+
+    # Initialize lists for shifts and delta SSIM
+    shifts_x = []
+    shifts_y = []
+    delta_ssim = []
+    colors = []
+
+    for key, value in results.items():
+        if key == 'file_inputs' or 'settings' in key:
+            continue
+        shifts_x.append(value['shift_x'])
+        shifts_y.append(value['shift_y'])
+        delta_ssim.append(value['change_ssim'])
+        if "shift exceeded" in value['description']:
+            colors.append('orange')  # bad shift
+            counts['shift_exceeded'] += 1
+        elif value['success'] == 'True':
+            colors.append('green')
+            counts['success'] += 1
+        else:
+            colors.append('red')  # the shift made the coregistered image worse
+            counts['failed'] += 1
+
+    # Create 3D scatter plot
+    fig = plt.figure(figsize=(10, 6))
+    ax = fig.add_subplot(111, projection='3d')
+
+    sc = ax.scatter(shifts_x, shifts_y, delta_ssim, c=colors)
+
+    # Create custom legend with counts
+    orange_patch = mpatches.Patch(color='orange', label=f'Shift exceeded ({counts["shift_exceeded"]})')
+    green_patch = mpatches.Patch(color='green', label=f'Success ({counts["success"]})')
+    red_patch = mpatches.Patch(color='red', label=f'Shift made it worse ({counts["failed"]})')
+
+    ax.legend(handles=[orange_patch, green_patch, red_patch], loc='center left', bbox_to_anchor=(1, 0.5))
+
+    ax.set_xlabel('X shift in pixels')
+    ax.set_ylabel('Y shift in pixels')
+    ax.set_zlabel('Delta SSIM')
+    ax.set_title('X Y Delta SSIM Scatter Plot')
+
+    plt.tight_layout()  # Adjust the layout to make space for the legend
+    plt.savefig(os.path.join(output_dir, 'x_y_delta_ssim_scatter_plot.png'))
+    print(f"Plot saved to {os.path.join(output_dir, 'x_y_delta_ssim_scatter_plot.png')}")
+
+
+
+# def plot_x_y_delta_ssim_scatter(result_json_path, output_dir):
+#     with open(result_json_path, 'r') as json_file:
+#         results = json.load(json_file)
+
+#          # Initialize counters for each category
+#         counts = {
+#             'no_valid_window': 0,
+#             'shift_exceeded': 0,
+#             'no_shift': 0,
+#             'success': 0,
+#             'failed': 0
+#         }
+
+#         # make a scatter plot of coregistered ssim vs original ssim scores and color those whose 'success' is True green and those whose 'success' is False red
+#         fig, ax = plt.subplots(figsize=(10, 6))  # Increase figure size if necessary
+#         for key, value in results.items():
+#             if key == 'file_inputs' or 'settings' in key:
+#                 continue
+#             if "shift exceeded" in value['description']:
+#                 ax.scatter(value['shift_x'], value['shift_y'],value['change_ssim'], color='orange')  # bad shift
+#                 counts['shift_exceeded'] += 1
+#             elif value['success'] == 'True':
+#                 ax.scatter(value['shift_x'], value['shift_y'],value['change_ssim'], color='green')
+#                 counts['success'] += 1
+#             else:
+#                 ax.scatter(value['shift_x'], value['shift_y'],value['change_ssim'], color='red')  # the shift made the coregistered image worse
+#                 counts['failed'] += 1
+
+#         # Create custom legend with counts
+#         orange_patch = mpatches.Patch(color='orange', label=f'Shift exceeded ({counts["shift_exceeded"]})')
+#         green_patch = mpatches.Patch(color='green', label=f'Success ({counts["success"]})')
+#         red_patch = mpatches.Patch(color='red', label=f'Shift made it worse ({counts["failed"]})')
+
+#         ax.legend(handles=[ orange_patch,  green_patch, red_patch], loc='center left', bbox_to_anchor=(1, 0.5))
+
+#         ax.set_xlabel('X shift in pixels')
+#         ax.set_ylabel('Y shift in pixels')
+#         # ax.set_zlabel('delta SSIM')
+#         ax.set_title(' X Y delta SSIM scatter plot')
+
+#         # plt.tight_layout(rect=[0, 0, 0.85, 1])  # Adjust the layout to make space for the legend
+#         plt.tight_layout()  # Adjust the layout to make space for the legend
+#         plt.savefig(os.path.join(output_dir, 'x_y_delta_ssim_scatter_plot.png'))
+#         print(f"Plot saved to {os.path.join(output_dir, 'x_y_delta_ssim_scatter_plot.png')}")
 
 
 def plot_shift_histogram(result_json_path, output_dir):

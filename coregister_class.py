@@ -22,8 +22,9 @@ import matplotlib.pyplot as plt
 
 lock = threading.Lock()
 
-def apply_shift_to_tiff(target_path, output_path, shift:np.ndarray):
-    print(f"Applying shift {shift}")
+def apply_shift_to_tiff(target_path, output_path, shift:np.ndarray,verbose=False):
+    if verbose:
+        print(f"Applying shift {shift}")
     with rasterio.open(target_path) as src:
         meta = src.meta.copy()
         meta.update({
@@ -249,16 +250,19 @@ class CoregisterInterface:
         
         # set the current resolution to whichever is lower (aka worse)
         if self.target_resolution[0] > self.template_resolution[0]:
-            print(f"target res {self.target_resolution} >  template {self.template_resolution}")
+            if self.verbose:
+                print(f"target res {self.target_resolution} >  template {self.template_resolution}")
             self.current_resolution = self.target_resolution  # target resolution is worse
             self.scaling_factor =  1
             self.template_reprojected = True # the template has to be reprojected to match the target resolution
         elif self.target_resolution[0] == self.template_resolution[0]:
-            print(f"target res {self.target_resolution} ==  template {self.template_resolution}")
+            if self.verbose:
+                print(f"target res {self.target_resolution} ==  template {self.template_resolution}")
             self.current_resolution = self.target_resolution
             self.scaling_factor = 1
         else:
-            print(f"target res {self.target_resolution} <  template {self.template_resolution}")
+            if self.verbose:
+                print(f"target res {self.target_resolution} <  template {self.template_resolution}")
             self.current_resolution = self.template_resolution
             self.scaling_factor = self.template_resolution[0] / self.target_resolution[0]
             
@@ -341,7 +345,7 @@ class CoregisterInterface:
 
     def apply_shift(self):
         # Apply the calculated shifts to the target image
-        apply_shift_to_tiff(self.original_target_path, self.output_path, (self.coreg_info['shift_y'], self.coreg_info['shift_x']))
+        apply_shift_to_tiff(self.original_target_path, self.output_path, (self.coreg_info['shift_y'], self.coreg_info['shift_x']),verbose=self.verbose)
 
     def get_resolution(self, image_path):
         """REturns the resolution of the image"""
