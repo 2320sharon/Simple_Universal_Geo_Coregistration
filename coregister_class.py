@@ -241,6 +241,30 @@ class CoregisterInterface:
 
         # get the bounds of the matching region
         self.bounds = self.find_matching_bounds(self.target_path, self.template_path)
+        # save a figure of the matching region
+        self.save_matching_region_figure()
+
+        # self.bounds = self.get_valid_window(self.target_path, self.template_path, self.window_size)
+
+    def save_matching_region_figure(self):
+        output_dir = os.path.dirname(self.output_path)
+        # Save a figure of the matching region
+        row_start, col_start, row_end, col_end = self.bounds
+        template_band = read_bounds(self.template_path,row_start,col_start,row_end,col_end)
+        target_band = read_bounds(self.target_path,row_start,col_start,row_end,col_end)
+        fig, ax = plt.subplots(1, 2, figsize=(10, 5))
+        # add the window size to the title
+        fig.suptitle(f'Matching Region ({self.window_size[0]}x{self.window_size[1]})\n bounds: {row_start, col_start, row_end, col_end}')
+        
+
+        ax[0].imshow(template_band, cmap='gray')
+        ax[0].set_title('Template Image')
+        ax[1].imshow(target_band, cmap='gray')
+        ax[1].set_title('Target Image')
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, f'matching_region_({self.window_size}).png'))
+        plt.close()
+
 
     def get_coreg_info(self):
         if self.coreg_info == {}:
@@ -372,12 +396,17 @@ class CoregisterInterface:
             # Check for valid window_size regions within the overlap
             for row in range(row_start, row_end - self.window_size[0] + 1):
                 for col in range(col_start, col_end - self.window_size[1] + 1):
+                    # print(f"Checking row {row}, col {col}")
+                    # print(f"row + self.window_size[0] : {row + self.window_size[0]}")
+                    # print(f"col + self.window_size[1] : {col + self.window_size[1]}")
+
                     # Read the corresponding data for both TIFFs
                     data1_box = data1[row:row + self.window_size[0], col:col + self.window_size[1]]
                     data2_box = data2[row:row + self.window_size[0], col:col + self.window_size[1]]
                     
                     # Check for NoData in both TIFFs
                     if (data1_box != nodata1).all() and (data2_box != nodata2).all():
+                        print(f"Found valid region at row {row}, col {col} , row + self.window_size[0] : {row + self.window_size[0]} , col + self.window_size[1] : {col + self.window_size[1]}")
                         return row, col, row + self.window_size[0], col + self.window_size[1]
 
         print(f"No valid {self.window_size} region found without NoData pixels.")
