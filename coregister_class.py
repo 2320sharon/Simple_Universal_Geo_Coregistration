@@ -22,6 +22,14 @@ import matplotlib.pyplot as plt
 
 lock = threading.Lock()
 
+def normalize(array: np.ndarray) -> np.ndarray:
+    minval = np.min(array)
+    maxval = np.max(array)
+    # avoid zerodivision
+    if maxval == minval:
+        maxval += 1e-5
+    return ((array - minval) / (maxval - minval)).astype(np.float64)
+
 def apply_shift_to_tiff(target_path, output_path, shift:np.ndarray,verbose=False):
     if verbose:
         print(f"Applying shift {shift}")
@@ -39,7 +47,13 @@ def apply_shift_to_tiff(target_path, output_path, shift:np.ndarray,verbose=False
                 band = src.read(i)
                 
                 transformed_band = scipy_shift(band, shift=shift, mode='constant', cval=0.0, order=3)
-                dst.write(transformed_band.astype(np.uint8), i)
+                # get the data type of the original band
+                dtype = band.dtype
+                dst.write(transformed_band.astype(dtype), i)
+
+                # dst.write(transformed_band.astype(np.uint8), i)
+
+
 
 def masked_ssim(reference, target, ref_no_data_value=0,target_no_data_value=0,gaussian_weights=True):
     # Create a mask for valid (non-no-data) pixels in both images
@@ -51,9 +65,9 @@ def masked_ssim(reference, target, ref_no_data_value=0,target_no_data_value=0,ga
     
     # Compute SSIM only over the masked region (valid data)
     ssim_score, ssim_image = ssim(
-        reference_masked,
-        target_masked,
-        data_range=255, # our pixels are in the range of 0-255
+        normalize(reference_masked), # could also try np.ma.masked_equal(reference, ref_no_data_value)
+        normalize(target_masked),   # could also try np.ma.masked_equal(target, target_no_data_value)
+        data_range=1, # our pixels are in the range of 0-255
         gaussian_weights=True, # Use Gaussian weights for windowing (gives more importance to center pixels)
         use_sample_covariance=False, # Use population covariance for SSIM
         full=True
@@ -67,6 +81,12 @@ def masked_ssim(reference, target, ref_no_data_value=0,target_no_data_value=0,ga
 
 
     return mean_ssim
+
+# ssim(normalize(np.ma.masked_equal(self.matchWin[:],
+#                                                            self.matchWin.nodata)),
+#                               normalize(np.ma.masked_equal(self.otherWin[:],
+#                                                            self.otherWin.nodata)),
+#                               data_range=1)
 
 def calc_ssim_in_bounds(template_path, target_path,template_nodata,target_nodata,row_start,col_start,row_end,col_end,gaussian_weights=True ):
     # read the bands from the matching bounds
@@ -103,6 +123,7 @@ def reproject_to_image(template_path, target_path, output_path):
         ref_height = ref.height
         ref_crs = ref.crs
         ref_nodata = ref.nodata
+        ref_dtype = ref.dtypes[0]  # Get the data type of the reference image
 
     # Open the target image and update metadata to match reference
     with rasterio.open(target_path) as target:
@@ -113,13 +134,22 @@ def reproject_to_image(template_path, target_path, output_path):
             'width': ref_width,
             'transform': ref_transform,
             'crs': ref_crs,
-            'nodata': ref_nodata
+            'nodata': ref_nodata,
+            'dtype': ref_dtype  # Set the data type to match the reference image
         })
+
+        # Check and replace invalid nodata value
+        if ref_nodata is None or ref_nodata == float('-inf'):
+            ref_nodata = 0  # or another valid nodata value for uint16
+
+        target_meta['nodata'] = ref_nodata
 
         # Create output file and perform resampling
         with rasterio.open(output_path, 'w', **target_meta) as dst:
             for i in range(1, target.count + 1):  # Iterate over each band
                 target_band = target.read(i)
+                # replace the nodata value in the target image
+                target_band[target_band == target.nodata] = ref_nodata
                 reproject(
                     source=target_band,
                     destination=rasterio.band(dst, i),
@@ -127,11 +157,11 @@ def reproject_to_image(template_path, target_path, output_path):
                     src_crs=target.crs,
                     dst_transform=ref_transform,
                     dst_crs=ref_crs,
-                    resampling=Resampling.bilinear,
+                    resampling=Resampling.cubic,
                     src_nodata=ref_nodata,
                     dst_nodata=ref_nodata
                 )
-    
+
     return output_path
 
 def find_shift(template: np.ndarray, target: np.ndarray) -> tuple:
@@ -171,7 +201,6 @@ class CoregisterInterface:
         # Properties with default values
         self.scaling_factor: float = 1
         self.bounds: tuple = None
-        self.resolution: tuple = None
 
         # Track resolutions for target, template, and current resolution
         self.target_resolution = None
@@ -204,6 +233,9 @@ class CoregisterInterface:
         else: # this is genrally what will run
             self.target_path = reproject_to_image(self.template_path, self.target_path, 'reprojected_target.tif')
 
+        if self.verbose:
+            print(f"Reprojected image saved to: {output_path}")
+
         self.template_nodata = self.read_no_data(self.template_path)
         self.target_nodata = self.read_no_data(self.target_path)
 
@@ -225,6 +257,17 @@ class CoregisterInterface:
                 'coregistered_ssim': 0,
                 "change_ssim": 0,
             }
+
+        # make the shifts json serializeable
+        self.coreg_info.update({'shift_x': float(self.coreg_info['shift_x'])})
+        self.coreg_info.update({'shift_y': float(self.coreg_info['shift_y'])})
+        self.coreg_info.update({'initial_shift_x': float(self.coreg_info['initial_shift_x'])})
+        self.coreg_info.update({'initial_shift_y': float(self.coreg_info['initial_shift_y'])})
+        self.coreg_info.update({'error': float(self.coreg_info['error'])})
+        self.coreg_info.update({'original_ssim': float(self.coreg_info['original_ssim'])})
+        self.coreg_info.update({'coregistered_ssim': float(self.coreg_info['coregistered_ssim'])})
+        self.coreg_info.update({'change_ssim': float(self.coreg_info['change_ssim'])})
+
         return self.coreg_info
 
     def quality_control_shift(self,shift):
