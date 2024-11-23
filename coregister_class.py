@@ -6,7 +6,7 @@ import json
 import rasterio
 import glob
 
-
+from rasterio.transform import Affine
 from skimage.metrics import structural_similarity as ssim
 from skimage import exposure
 from tqdm import tqdm
@@ -35,6 +35,41 @@ def apply_shift_to_tiff(target_path, output_path, shift:np.ndarray,verbose=False
         print(f"Applying shift {shift}")
     with rasterio.open(target_path) as src:
         meta = src.meta.copy()
+
+        transform_shift = Affine.translation(shift[1], shift[0])  # x=shift[1], y=shift[0]
+        meta['transform'] = src.transform * transform_shift
+
+        # Ensure no changes to image data
+        meta.update({
+            'compress': src.compression if src.compression else 'lzw',  # Preserve compression
+            'dtype': src.dtypes[0],  # Preserve data type
+        })
+
+        if src.nodata is not None:
+            meta.update({'nodata': src.nodata})
+
+        if verbose:
+            print(f"Original transform:\n{src.transform}")
+            print(f"Updated transform:\n{meta['transform']}")
+
+        # Write a new file with updated metadata
+        with rasterio.open(output_path, 'w', **meta) as dst:
+            dst.write(src.read())  # Writes all bands directly
+
+def apply_shift_to_tiff_old_method(target_path, output_path, shift:np.ndarray,verbose=False):
+    if verbose:
+        print(f"Applying shift {shift}")
+    with rasterio.open(target_path) as src:
+        meta = src.meta.copy()
+
+        # transform_shift = Affine.translation(shift[1], shift[0])  # x=shift[1], y=shift[0]
+        # meta['transform'] = src.transform * transform_shift
+
+        # if verbose:
+        #     print(f"Original transform:\n{src.transform}")
+        #     print(f"Updated transform:\n{meta['transform']}")
+
+
         meta.update({
             'driver': 'GTiff',
             'height': src.height,
@@ -46,12 +81,11 @@ def apply_shift_to_tiff(target_path, output_path, shift:np.ndarray,verbose=False
             for i in range(1, src.count + 1):
                 band = src.read(i)
                 
-                transformed_band = scipy_shift(band, shift=shift, mode='constant', cval=0.0, order=3)
+                transformed_band = scipy_shift(band, shift=shift, mode='reflect', cval=0.0, order=3)
                 # get the data type of the original band
                 dtype = band.dtype
                 dst.write(transformed_band.astype(dtype), i)
-
-                # dst.write(transformed_band.astype(np.uint8), i)
+                # dst.write(band.astype(dtype), i)
 
 
 
@@ -88,21 +122,21 @@ def masked_ssim(reference, target, ref_no_data_value=0,target_no_data_value=0,ga
 #                                                            self.otherWin.nodata)),
 #                               data_range=1)
 
-def calc_ssim_in_bounds(template_path, target_path,template_nodata,target_nodata,row_start,col_start,row_end,col_end,gaussian_weights=True ):
+def calc_ssim_in_bounds(template_path, target_path,template_nodata,target_nodata,row_start,col_start,row_end,col_end,gaussian_weights=True,target_band_number=1,template_band_number=1):
     # read the bands from the matching bounds
-    template_band = read_bounds(template_path,row_start,col_start,row_end,col_end)
-    target_band = read_bounds(target_path,row_start,col_start,row_end,col_end)
+    template_band = read_bounds(template_path,row_start,col_start,row_end,col_end,band_number=template_band_number)
+    target_band = read_bounds(target_path,row_start,col_start,row_end,col_end,band_number=target_band_number)
      
     # Compute SSIM score
     ssim_score = masked_ssim(template_band, target_band, template_nodata, target_nodata, gaussian_weights)
     return ssim_score
 
-def read_bounds(tif_path, row_start, col_start, row_end, col_end):
+def read_bounds(tif_path, row_start, col_start, row_end, col_end,band_number=1):
     with rasterio.open(tif_path) as src:
         # Create a window using the bounds
         window = rasterio.windows.Window.from_slices((row_start, row_end), (col_start, col_end))
         # Read only the first band within the window
-        data_box = src.read(1, window=window)
+        data_box = src.read(band_number, window=window)
         return data_box
 
 def reproject_to_image(template_path, target_path, output_path):
@@ -184,8 +218,11 @@ def find_shift(template: np.ndarray, target: np.ndarray) -> tuple:
     return shift, error, diffphase
 
 class CoregisterInterface:
-    def __init__(self, target_path, template_path, output_path, window_size: tuple=100, settings: dict={}, gaussian_weights: bool=True,verbose: bool = False):
+    def __init__(self, target_path, template_path, output_path, window_size: tuple=100, settings: dict={}, gaussian_weights: bool=True,verbose: bool = False,target_band: int = 1, template_band: int = 1):
         self.verbose = verbose
+
+        self.target_band = target_band
+        self.template_band = template_band
         
         # Initialize paths
         self.target_path = target_path
@@ -206,6 +243,7 @@ class CoregisterInterface:
         self.target_resolution = None
         self.template_resolution = None
         self.current_resolution = None
+        self.original_target_resolution = None
 
         # Track SSIM values
         self.original_ssim = 0
@@ -231,7 +269,8 @@ class CoregisterInterface:
         if self.template_reprojected:
             self.template_path = reproject_to_image(self.target_path, self.template_path, 'reprojected_template.tif')
         else: # this is genrally what will run
-            self.target_path = reproject_to_image(self.template_path, self.target_path, 'reprojected_target.tif')
+            reprojected_path = output_path.replace('.tif','_reprojected.tif')
+            self.target_path = reproject_to_image(self.template_path, self.target_path, reprojected_path)
 
         if self.verbose:
             print(f"Reprojected image saved to: {output_path}")
@@ -250,8 +289,8 @@ class CoregisterInterface:
         output_dir = os.path.dirname(self.output_path)
         # Save a figure of the matching region
         row_start, col_start, row_end, col_end = self.bounds
-        template_band = read_bounds(self.template_path,row_start,col_start,row_end,col_end)
-        target_band = read_bounds(self.target_path,row_start,col_start,row_end,col_end)
+        template_band = read_bounds(self.template_path,row_start,col_start,row_end,col_end,band_number=self.template_band)
+        target_band = read_bounds(self.target_path,row_start,col_start,row_end,col_end,band_number=self.target_band)
         fig, ax = plt.subplots(1, 2, figsize=(10, 5))
         # add the window size to the title
         fig.suptitle(f'Matching Region ({self.window_size[0]}x{self.window_size[1]})\n bounds: {row_start, col_start, row_end, col_end}')
@@ -262,7 +301,9 @@ class CoregisterInterface:
         ax[1].imshow(target_band, cmap='gray')
         ax[1].set_title('Target Image')
         plt.tight_layout()
-        plt.savefig(os.path.join(output_dir, f'matching_region_({self.window_size}).png'))
+        # get the filename of the output path
+        filename = os.path.basename(self.output_path).split('.')[0]
+        plt.savefig(os.path.join(output_dir, f'matching_region_({self.window_size}){filename}.png'))
         plt.close()
 
 
@@ -271,6 +312,8 @@ class CoregisterInterface:
             self.coreg_info = {
                 'shift_x': 0,
                 'shift_y': 0,
+                'shift_x_meters': 0,
+                'shift_y_meters': 0,
                 'initial_shift_x':0,
                 'initial_shift_y': 0,
                 'error': 0,
@@ -291,6 +334,8 @@ class CoregisterInterface:
         self.coreg_info.update({'original_ssim': float(self.coreg_info['original_ssim'])})
         self.coreg_info.update({'coregistered_ssim': float(self.coreg_info['coregistered_ssim'])})
         self.coreg_info.update({'change_ssim': float(self.coreg_info['change_ssim'])})
+        self.coreg_info.update({'shift_y_meters': float(self.coreg_info['shift_y_meters'])})
+        self.coreg_info.update({'shift_x_meters': float(self.coreg_info['shift_x_meters'])})
 
         return self.coreg_info
 
@@ -309,6 +354,7 @@ class CoregisterInterface:
     def _initialize_resolutions(self):
         # Method to initialize or calculate the target and template resolutions
         self.target_resolution = self.get_resolution(self.target_path)
+        self.original_target_resolution = self.target_resolution   # this is needed later to scale the shifts in meters back to pixels
         self.template_resolution = self.get_resolution(self.template_path)
 
     def set_scaling_factor(self):
@@ -344,8 +390,8 @@ class CoregisterInterface:
         # 1. Get the bounds of the reprojected target and template
         row_start, col_start, row_end, col_end = self.bounds
         # read the bands from the matching bounds for the target and template
-        template_window = read_bounds(self.template_path,row_start,col_start,row_end,col_end)
-        target_window = read_bounds(self.target_path,row_start,col_start,row_end,col_end)
+        template_window = read_bounds(self.template_path,row_start,col_start,row_end,col_end,band_number=self.template_band)
+        target_window = read_bounds(self.target_path,row_start,col_start,row_end,col_end,band_number=self.target_band)
         # 2. apply histogram matching
         target_window = exposure.match_histograms(target_window, template_window)
         # 3. Find the shift between the template and target images
@@ -363,15 +409,27 @@ class CoregisterInterface:
         else:
             shift = initial_shift
 
+        # convert the shift to meters ( shift is in Y X format in pixels)
+        # shift_meters = (shift[1]*self.current_resolution[0], shift[0]*self.current_resolution[1])
+
+        shift_meters = (shift[0]*self.current_resolution[1], shift[1]*self.current_resolution[0])
+
+        # convert the meters to the target resolution in pixels
+        shift = (shift_meters[0]/self.original_target_resolution[1], shift_meters[1]/self.original_target_resolution[0])
+
         # get the shift_x and shift_y scaled if the target was reprojected
-        if not self.template_reprojected:
-            shift = shift[0]*self.scaling_factor, shift[1]*self.scaling_factor
+        # if not self.template_reprojected:
+        #     shift = shift[0]*self.scaling_factor, shift[1]*self.scaling_factor
 
         self.coreg_info.update({        
                 'shift_x': shift[1],
                 'shift_y': shift[0],
+                'shift_x_meters': shift_meters[1],
+                'shift_y_meters': shift_meters[0],
                 'initial_shift_x':initial_shift[1],
                 'initial_shift_y': initial_shift[0],
+                'current_resolution': self.current_resolution,
+                'target_resolution': self.original_target_resolution,
                 'error': error,
                 'qc': shift_qc,
                 'description':'successfully coregistered' if shift_qc else 'failed : shift exceeded max or min translation',
@@ -406,7 +464,8 @@ class CoregisterInterface:
                     
                     # Check for NoData in both TIFFs
                     if (data1_box != nodata1).all() and (data2_box != nodata2).all():
-                        print(f"Found valid region at row {row}, col {col} , row + self.window_size[0] : {row + self.window_size[0]} , col + self.window_size[1] : {col + self.window_size[1]}")
+                        if self.verbose:
+                            print(f"Found valid region at row {row}, col {col} , row + self.window_size[0] : {row + self.window_size[0]} , col + self.window_size[1] : {col + self.window_size[1]}")
                         return row, col, row + self.window_size[0], col + self.window_size[1]
 
         print(f"No valid {self.window_size} region found without NoData pixels.")
@@ -418,6 +477,8 @@ class CoregisterInterface:
     def apply_shift(self):
         # Apply the calculated shifts to the target image
         apply_shift_to_tiff(self.original_target_path, self.output_path, (self.coreg_info['shift_y'], self.coreg_info['shift_x']),verbose=self.verbose)
+        # apply_shift_to_tiff_old_method(self.original_target_path, self.output_path, (self.coreg_info['shift_y'], self.coreg_info['shift_x']),verbose=self.verbose)
+
 
     def get_resolution(self, image_path):
         """REturns the resolution of the image"""
@@ -439,7 +500,7 @@ class CoregisterInterface:
         # Calculate the SSIM of the original target image
         # read the bounds of the matching region
         row_start, col_start, row_end, col_end = self.bounds
-        self.original_ssim = calc_ssim_in_bounds(self.template_path, self.target_path,self.template_nodata,self.target_nodata,row_start,col_start,row_end,col_end,self.gaussian_weights)
+        self.original_ssim = calc_ssim_in_bounds(self.template_path, self.target_path,self.template_nodata,self.target_nodata,row_start,col_start,row_end,col_end,self.gaussian_weights,target_band_number=self.target_band,template_band_number=self.template_band)
         
         self.coreg_info.update({'original_ssim': self.original_ssim})
         
@@ -459,7 +520,7 @@ class CoregisterInterface:
         # read the bounds of the matching region
         row_start, col_start, row_end, col_end = self.bounds
         target_no_data = self.read_no_data(output_path)
-        self.coregistered_ssim = calc_ssim_in_bounds(self.template_path, output_path,self.template_nodata,target_no_data,row_start,col_start,row_end,col_end,self.gaussian_weights)
+        self.coregistered_ssim = calc_ssim_in_bounds(self.template_path, output_path,self.template_nodata,target_no_data,row_start,col_start,row_end,col_end,self.gaussian_weights,target_band_number=self.target_band,template_band_number=self.template_band)
         
         self.coreg_info.update({'coregistered_ssim': self.coregistered_ssim})
 
