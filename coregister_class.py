@@ -6,6 +6,7 @@ import json
 import rasterio
 import glob
 
+
 from rasterio.transform import Affine
 from skimage.metrics import structural_similarity as ssim
 from skimage import exposure
@@ -198,6 +199,22 @@ def reproject_to_image(template_path, target_path, output_path):
 
     return output_path
 
+def write_window_to_tiff(window,src_path, output_path):
+    with rasterio.open(src_path) as src:
+        data = src.read(window=window)
+        # Update the transform to reflect the window's position
+        transform = src.window_transform(window)
+        # Define metadata for the new file
+        out_meta = src.meta.copy()
+        out_meta.update({
+            "height": window.height,
+            "width": window.width,
+            "transform": transform
+        })
+        with rasterio.open(output_path, 'w', **out_meta) as dst:
+            dst.write(data)
+    return output_path
+
 def find_shift(template: np.ndarray, target: np.ndarray) -> tuple:
     """
         Calculate the shift required to align the target image with the template image using phase cross-correlation.
@@ -280,10 +297,32 @@ class CoregisterInterface:
 
         # get the bounds of the matching region
         self.bounds = self.find_matching_bounds(self.target_path, self.template_path)
-        # save a figure of the matching region
-        self.save_matching_region_figure()
+        if self.bounds == (None, None, None, None):
+            self.coreg_info.update({'description': 'no valid matching window found of size '+str(self.window_size)})
+            self.coreg_info.update({'success': 'False'})
+        else:
+            # save a figure of the matching region
+            self.write_matching_window_tiffs()
+            self.save_matching_region_figure()
 
         # self.bounds = self.get_valid_window(self.target_path, self.template_path, self.window_size)
+
+
+
+    def write_matching_window_tiffs(self):
+        row_start, col_start, row_end, col_end = self.bounds
+        window = rasterio.windows.Window.from_slices((row_start, row_end), (col_start, col_end))
+        # save the cropped tiffs
+        filename = os.path.basename(self.template_path).split('.')[0] + "_cropped.tif"
+        output_dir = os.path.dirname(self.output_path)
+        output_path = os.path.join(output_dir, filename)
+        print(f"cropped template path : {output_path}")
+        write_window_to_tiff(window,self.template_path, output_path)
+
+        filename = os.path.basename(self.target_path).split('.')[0] + "_cropped.tif"
+        output_path = os.path.join(output_dir, filename)
+        print(f"cropped target path : {output_path}")
+        write_window_to_tiff(window,self.target_path, output_path)
 
     def save_matching_region_figure(self):
         output_dir = os.path.dirname(self.output_path)
@@ -294,7 +333,6 @@ class CoregisterInterface:
         fig, ax = plt.subplots(1, 2, figsize=(10, 5))
         # add the window size to the title
         fig.suptitle(f'Matching Region ({self.window_size[0]}x{self.window_size[1]})\n bounds: {row_start, col_start, row_end, col_end}')
-        
 
         ax[0].imshow(template_band, cmap='gray')
         ax[0].set_title('Template Image')
@@ -470,7 +508,7 @@ class CoregisterInterface:
 
         print(f"No valid {self.window_size} region found without NoData pixels.")
         self.coreg_info.update({'description': f'no valid matching window found of size '+str(self.window_size)})
-        raise Exception(f"No valid region found without NoData pixels of the specified window size {self.window_size}.")
+        # raise Exception(f"No valid region found without NoData pixels of the specified window size {self.window_size}.")
         return None, None, None, None  
 
 
