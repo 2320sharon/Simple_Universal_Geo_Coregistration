@@ -10,7 +10,7 @@ import glob
 from rasterio.transform import Affine
 from skimage.metrics import structural_similarity as ssim
 from skimage import exposure
-from tqdm import tqdm
+import tqdm
 from skimage.registration import phase_cross_correlation
 import threading
 from scipy.ndimage import shift as scipy_shift
@@ -507,7 +507,9 @@ class CoregisterInterface:
                         return row, col, row + self.window_size[0], col + self.window_size[1]
 
         print(f"No valid {self.window_size} region found without NoData pixels.")
-        self.coreg_info.update({'description': f'no valid matching window found of size '+str(self.window_size)})
+        self.coreg_info.update({'description': f'no valid matching window found of size '+str(self.window_size)}
+        )
+        self.coreg_info.update({'success': 'False'})
         # raise Exception(f"No valid region found without NoData pixels of the specified window size {self.window_size}.")
         return None, None, None, None  
 
