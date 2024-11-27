@@ -9,7 +9,7 @@ import matplotlib.patches as mpatches
 
 from skimage.metrics import structural_similarity as ssim
 from skimage import exposure
-from tqdm import tqdm
+import tqdm
 from skimage.registration import phase_cross_correlation
 import threading
 from scipy.ndimage import shift as scipy_shift
