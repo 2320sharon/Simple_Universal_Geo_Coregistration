@@ -1,27 +1,264 @@
-import rasterio
-import numpy as np
 import os
-import math
-import json
-import rasterio
-import glob
-
-
-from rasterio.transform import Affine
-from skimage.metrics import structural_similarity as ssim
-from skimage import exposure
-import tqdm
-from skimage.registration import phase_cross_correlation
 import threading
-from scipy.ndimage import shift as scipy_shift
-from rasterio.warp import reproject, Resampling  # Import directly from rasterio.warp
 from concurrent.futures import ThreadPoolExecutor
 
+import numpy as np
 import matplotlib
-matplotlib.use('Agg')  # Use Agg backend for non-GUI rendering
 import matplotlib.pyplot as plt
+import tqdm
+import rasterio
+from rasterio.transform import Affine
+from rasterio.warp import reproject, Resampling
+from scipy.spatial.distance import cdist
+from skimage import exposure
+from skimage.metrics import structural_similarity as ssim
+from skimage.registration import phase_cross_correlation
+
+matplotlib.use('Agg')  # Use Agg backend for non-GUI rendering
 
 lock = threading.Lock()
+
+
+def get_max_overlap_window_size_in_pixels(tiff1_path, tiff2_path):
+    """
+    Determines the largest possible square window size (in pixels) 
+    that can fit entirely within the overlapping region of two TIFF files.
+
+    Args:
+        tiff1_path (str): Path to the first TIFF file.
+        tiff2_path (str): Path to the second TIFF file.
+
+    Returns:
+        int: The largest possible square window size (in pixels) 
+             that fits within the overlapping region.
+    """
+    import rasterio
+    from shapely.geometry import box
+
+    with rasterio.open(tiff1_path) as src1, rasterio.open(tiff2_path) as src2:
+        # Get the bounding boxes of both rasters
+        bbox1 = box(*src1.bounds)
+        bbox2 = box(*src2.bounds)
+        
+        # Find the intersection of the bounding boxes
+        intersection = bbox1.intersection(bbox2)
+        if intersection.is_empty:
+            raise ValueError("The two TIFF files do not overlap.")
+        
+        # Get the bounds of the intersection
+        intersection_bounds = intersection.bounds
+        left, bottom, right, top = intersection_bounds
+        
+        # Calculate the width and height of the intersection in pixels
+        # Use the resolution of the first raster to compute pixel dimensions
+        pixel_width = (right - left) / src1.res[0]
+        pixel_height = (top - bottom) / src1.res[1]
+        
+        # Convert to integer pixel values
+        intersection_width = int(pixel_width)
+        intersection_height = int(pixel_height)
+        
+        # Determine the maximum square box size that can fit (in pixels)
+        max_window_size = min(intersection_width, intersection_height)
+        
+        return max_window_size
+
+def find_best_starting_point(tiff1_path, tiff2_path):
+    """
+    Finds the best starting point near the center of the overlapping region 
+    of two TIFF files. If the center is a NoData point, searches for the closest 
+    valid point with data in both TIFFs.
+
+    Args:
+        tiff1_path (str): Path to the first TIFF file.
+        tiff2_path (str): Path to the second TIFF file.
+
+    Returns:
+        tuple: (row, col) pixel coordinates of the best starting point.
+    """
+
+
+    with rasterio.open(tiff1_path) as src1, rasterio.open(tiff2_path) as src2:
+        # Define overlapping window between the two TIFFs
+        overlap_window = src1.window(*src1.bounds).intersection(src2.window(*src2.bounds))
+        # Convert to row/col coordinates for consistent box size
+        row_start, col_start, row_end, col_end = map(int, overlap_window.flatten())
+
+        # Mask out the valid data regions for both TIFFs
+        valid_data_mask1 = src1.read(1, masked=True).mask[row_start:row_end, col_start:col_end]
+        valid_data_mask2 = src2.read(1, masked=True).mask[row_start:row_end, col_start:col_end]
+
+        # Combine masks to find invalid data regions
+        combined_mask = valid_data_mask1 | valid_data_mask2  
+
+        # Determine the central point
+        row_center = combined_mask.shape[0] // 2
+        col_center = combined_mask.shape[1] // 2
+
+        if not combined_mask[row_center, col_center]:
+            return (row_center, col_center)  # Center point is valid
+
+        # If the center is invalid, find the nearest valid point
+        valid_points = np.column_stack(np.where(~combined_mask))  # Get all valid points
+        if valid_points.size == 0:
+            raise ValueError("No valid data points in the overlapping region.")
+
+        # Calculate distances from the center to all valid points
+        center_point = np.array([[row_center, col_center]])
+        distances = cdist(center_point, valid_points, metric='euclidean')
+        closest_index = np.argmin(distances)
+
+        # Return the closest valid point
+        best_point = tuple(valid_points[closest_index])
+        return best_point
+
+def get_valid_window_with_fallback(tiff1_path, tiff2_path, start_point=None, 
+                                   initial_window_size=None, min_window_size=(16, 16)):
+    """
+    Determines the largest possible square window size (in pixels) 
+    that can fit entirely within the overlapping region of two TIFF files,
+    starting from a specified point. If an initial window size is provided, 
+    it attempts to use that size first and shrinks the window until a valid 
+    window is found or the minimum window size is reached. Ensures the window 
+    size is always even.
+
+    Args:
+        tiff1_path (str): Path to the first TIFF file.
+        tiff2_path (str): Path to the second TIFF file.
+        start_point (tuple, optional): (row, col) pixel coordinates to start 
+                                       creating the window from. Defaults to 
+                                       the center of the overlapping region.
+        initial_window_size (tuple, optional): (rows, cols) dimensions of the 
+                                               initial window size to attempt.
+        min_window_size (tuple): Minimum window size (rows, cols) allowed. 
+                                 Defaults to (16, 16).
+
+    Returns:
+        tuple: Bounds of the valid window as (row_start, row_end, col_start, col_end).
+               If no valid window is found, raises a ValueError.
+    """
+    with rasterio.open(tiff1_path) as src1, rasterio.open(tiff2_path) as src2:
+        # Define overlapping window between the two TIFFs
+        overlap_window = src1.window(*src1.bounds).intersection(src2.window(*src2.bounds))
+        # Convert to row/col coordinates for consistent box size
+        row_start, col_start, row_end, col_end = map(int, overlap_window.flatten())
+
+        # Mask out the valid data regions for both TIFFs
+        valid_data_mask1 = src1.read(1, masked=True).mask[row_start:row_end, col_start:col_end]
+        valid_data_mask2 = src2.read(1, masked=True).mask[row_start:row_end, col_start:col_end]
+
+        # Combine masks to find invalid data regions
+        combined_mask = valid_data_mask1 | valid_data_mask2  
+
+        # Determine the starting point
+        if start_point is None:
+            row_center = (combined_mask.shape[0]) // 2
+            col_center = (combined_mask.shape[1]) // 2
+        else:
+            row_center, col_center = start_point
+
+        if not (0 <= row_center < combined_mask.shape[0] and 0 <= col_center < combined_mask.shape[1]):
+            raise ValueError("Start point is out of bounds of the overlapping region.")
+
+        if combined_mask[row_center, col_center]:
+            raise ValueError("Start point is located in a NoData region.")
+
+        # Initialize window dimensions
+        if initial_window_size is None:
+            initial_window_size = (min_window_size[0], min_window_size[1])
+
+        # Ensure window size is even
+        def make_even(size):
+            return size if size % 2 == 0 else size - 1
+
+        rows, cols = map(make_even, initial_window_size)
+        min_rows, min_cols = map(make_even, min_window_size)
+
+        # Attempt to create a valid window
+        def is_valid_window(window_size):
+            rows, cols = window_size
+            half_rows, half_cols = rows // 2, cols // 2
+            row_start = row_center - half_rows
+            row_end = row_center + half_rows
+            col_start = col_center - half_cols
+            col_end = col_center + half_cols
+            
+            # Check if the window exceeds bounds
+            if (row_start < 0 or col_start < 0 or 
+                row_end > combined_mask.shape[0] or col_end > combined_mask.shape[1]):
+                return False, None
+            
+            # Check if the window contains any NoData pixels
+            if not combined_mask[row_start:row_end, col_start:col_end].any():
+                # return True, (row_start, row_end, col_start, col_end)
+                return True, (row_start,col_start,row_end,col_end)
+            
+            return False, None
+
+        # Start with the initial window size and shrink if necessary
+        while rows >= min_rows and cols >= min_cols:
+            # print(f"rows: {rows}, cols: {cols}")
+            valid, bounds = is_valid_window((rows, cols))
+            if valid:
+                return (rows, cols), bounds
+            
+            # Shrink window size, keeping it even
+            rows -= 2
+            cols -= 2
+
+        # If no valid window is found
+        return (0,0),(None, None, None, None)
+
+def get_max_valid_window_size_and_bounds(tiff1_path, tiff2_path):
+    """
+    Determines the largest possible square window size (in pixels) 
+    that can fit entirely within the overlapping region of two TIFF files,
+    ensuring the window contains no NoData pixels in both TIFFs.
+
+    Args:
+        tiff1_path (str): Path to the first TIFF file.
+        tiff2_path (str): Path to the second TIFF file.
+
+    Returns:
+        int: The largest possible square window size (in pixels) 
+             that contains no NoData pixels in both TIFF files.
+        tuple: The pixel bounds of the largest valid window as 
+               (row_start, row_end, col_start, col_end).
+    """
+    with rasterio.open(tiff1_path) as src1, rasterio.open(tiff2_path) as src2:
+        # Define overlapping window between the two TIFFs
+        overlap_window = src1.window(*src1.bounds).intersection(src2.window(*src2.bounds))
+        # Convert to row/col coordinates for consistent box size
+        row_start, col_start, row_end, col_end = map(int, overlap_window.flatten())
+
+        # Mask out the valid data regions for both TIFFs
+        valid_data_mask1 = src1.read(1, masked=True).mask[row_start:row_end, col_start:col_end]
+        valid_data_mask2 = src2.read(1, masked=True).mask[row_start:row_end, col_start:col_end]
+
+        # Combine masks to find invalid data regions
+        combined_mask = valid_data_mask1 | valid_data_mask2  
+
+        max_window_size = 0
+        best_bounds = None, None, None, None
+
+        # Find the largest square window that contains no NoData pixels
+        # Start with the largest even window size and decrement by 2 (to ensure even sizes)
+        for window_size in range(min(combined_mask.shape) - (min(combined_mask.shape) % 2), 0, -2):
+            found = False  # Flag to stop further iteration once a valid window is found
+            for row in range(combined_mask.shape[0] - window_size + 1):  # Loop through rows
+                for col in range(combined_mask.shape[1] - window_size + 1):  # Loop through columns
+                    # Check if the window does not contain any `True` values
+                    if not combined_mask[row:row + window_size, col:col + window_size].any():
+                        max_window_size = window_size
+                        best_bounds = (row, row + window_size, col, col + window_size)
+                        found = True  # Mark as found
+                        break  # Break the column loop
+                if found:
+                    break  # Break the row loop
+            if found:
+                break  # Break the window_size loop
+            
+        return max_window_size, best_bounds
 
 def normalize(array: np.ndarray) -> np.ndarray:
     minval = np.min(array)
@@ -31,7 +268,17 @@ def normalize(array: np.ndarray) -> np.ndarray:
         maxval += 1e-5
     return ((array - minval) / (maxval - minval)).astype(np.float64)
 
-def apply_shift_to_tiff(target_path, output_path, shift:np.ndarray,verbose=False):
+def apply_shift_to_tiff(target_path:str, output_path:str, shift:np.ndarray,verbose=False):
+    """
+    Applies a spatial shift to a GeoTIFF file and writes the result to a new file.
+    Parameters:
+    target_path (str): The file path to the input GeoTIFF file.
+    output_path (str): The file path to save the output GeoTIFF file with the applied shift.
+    shift (np.ndarray): A numpy array containing the shift values [y_shift, x_shift].
+    verbose (bool, optional): If True, prints detailed information about the process. Default is False.
+    Returns:
+    None
+    """
     if verbose:
         print(f"Applying shift {shift}")
     with rasterio.open(target_path) as src:
@@ -57,40 +304,18 @@ def apply_shift_to_tiff(target_path, output_path, shift:np.ndarray,verbose=False
         with rasterio.open(output_path, 'w', **meta) as dst:
             dst.write(src.read())  # Writes all bands directly
 
-def apply_shift_to_tiff_old_method(target_path, output_path, shift:np.ndarray,verbose=False):
-    if verbose:
-        print(f"Applying shift {shift}")
-    with rasterio.open(target_path) as src:
-        meta = src.meta.copy()
-
-        # transform_shift = Affine.translation(shift[1], shift[0])  # x=shift[1], y=shift[0]
-        # meta['transform'] = src.transform * transform_shift
-
-        # if verbose:
-        #     print(f"Original transform:\n{src.transform}")
-        #     print(f"Updated transform:\n{meta['transform']}")
-
-
-        meta.update({
-            'driver': 'GTiff',
-            'height': src.height,
-            'width': src.width,
-            'transform': src.transform,
-            'crs': src.crs
-        })
-        with rasterio.open(output_path, 'w', **meta) as dst:
-            for i in range(1, src.count + 1):
-                band = src.read(i)
-                
-                transformed_band = scipy_shift(band, shift=shift, mode='reflect', cval=0.0, order=3)
-                # get the data type of the original band
-                dtype = band.dtype
-                dst.write(transformed_band.astype(dtype), i)
-                # dst.write(band.astype(dtype), i)
-
-
-
 def masked_ssim(reference, target, ref_no_data_value=0,target_no_data_value=0,gaussian_weights=True):
+    """
+    Compute the Structural Similarity Index (SSIM) between two images, masking out no-data regions.
+    Parameters:
+    reference (ndarray): The reference image.
+    target (ndarray): The target image to compare against the reference.
+    ref_no_data_value (int or float, optional): The no-data value in the reference image. Default is 0.
+    target_no_data_value (int or float, optional): The no-data value in the target image. Default is 0.
+    gaussian_weights (bool, optional): Whether to use Gaussian weights for windowing. Default is True.
+    Returns:
+    float: The mean SSIM score over valid (non-no-data) regions.
+    """
     # Create a mask for valid (non-no-data) pixels in both images
     mask = (reference != ref_no_data_value) & (target != target_no_data_value)
     
@@ -102,8 +327,8 @@ def masked_ssim(reference, target, ref_no_data_value=0,target_no_data_value=0,ga
     ssim_score, ssim_image = ssim(
         normalize(reference_masked), # could also try np.ma.masked_equal(reference, ref_no_data_value)
         normalize(target_masked),   # could also try np.ma.masked_equal(target, target_no_data_value)
-        data_range=1, # our pixels are in the range of 0-255
-        gaussian_weights=True, # Use Gaussian weights for windowing (gives more importance to center pixels)
+        data_range=1,               # data was normalized to [0, 1]
+        gaussian_weights=gaussian_weights, # Use Gaussian weights for windowing (gives more importance to center pixels)
         use_sample_covariance=False, # Use population covariance for SSIM
         full=True
     )
@@ -117,13 +342,24 @@ def masked_ssim(reference, target, ref_no_data_value=0,target_no_data_value=0,ga
 
     return mean_ssim
 
-# ssim(normalize(np.ma.masked_equal(self.matchWin[:],
-#                                                            self.matchWin.nodata)),
-#                               normalize(np.ma.masked_equal(self.otherWin[:],
-#                                                            self.otherWin.nodata)),
-#                               data_range=1)
-
 def calc_ssim_in_bounds(template_path, target_path,template_nodata,target_nodata,row_start,col_start,row_end,col_end,gaussian_weights=True,target_band_number=1,template_band_number=1):
+    """
+    Calculate the Structural Similarity Index (SSIM) within specified bounds between two images.
+    Parameters:
+    template_path (str): Path to the template image file.
+    target_path (str): Path to the target image file.
+    template_nodata (float): No-data value for the template image.
+    target_nodata (float): No-data value for the target image.
+    row_start (int): Starting row index for the bounds.
+    col_start (int): Starting column index for the bounds.
+    row_end (int): Ending row index for the bounds.
+    col_end (int): Ending column index for the bounds.
+    gaussian_weights (bool, optional): Whether to use Gaussian weights for SSIM calculation. Default is True.
+    target_band_number (int, optional): Band number to read from the target image. Default is 1.
+    template_band_number (int, optional): Band number to read from the template image. Default is 1.
+    Returns:
+    float: SSIM score between the specified bounds of the template and target images.
+    """
     # read the bands from the matching bounds
     template_band = read_bounds(template_path,row_start,col_start,row_end,col_end,band_number=template_band_number)
     target_band = read_bounds(target_path,row_start,col_start,row_end,col_end,band_number=target_band_number)
@@ -133,6 +369,18 @@ def calc_ssim_in_bounds(template_path, target_path,template_nodata,target_nodata
     return ssim_score
 
 def read_bounds(tif_path, row_start, col_start, row_end, col_end,band_number=1):
+    """
+    Reads a specific window of data from a given TIFF file.
+    Parameters:
+    tif_path (str): Path to the TIFF file.
+    row_start (int): Starting row index for the window.
+    col_start (int): Starting column index for the window.
+    row_end (int): Ending row index for the window.
+    col_end (int): Ending column index for the window.
+    band_number (int, optional): The band number to read from the TIFF file. Defaults to 1.
+    Returns:
+    numpy.ndarray: The data read from the specified window of the TIFF file.
+    """
     with rasterio.open(tif_path) as src:
         # Create a window using the bounds
         window = rasterio.windows.Window.from_slices((row_start, row_end), (col_start, col_end))
@@ -140,9 +388,62 @@ def read_bounds(tif_path, row_start, col_start, row_end, col_end,band_number=1):
         data_box = src.read(band_number, window=window)
         return data_box
 
+def update_tiff_match_largest_dtype(tiff1_path, tiff2_path, output_path):
+    """
+    Changes the data type of the smaller data type TIFF to match the larger data type TIFF
+    without scaling any values and returns the original paths in the input order.
+    
+    Parameters:
+    tiff1_path (str): Path to the first TIFF file.
+    tiff2_path (str): Path to the second TIFF file.
+    output_path (str): Path where the TIFF file with updated dtype will be saved.
+    
+    Returns:
+    tuple: Paths to the TIFFs in the order they were passed, with the smaller TIFF's
+           path replaced by the updated output path.
+    """
+    # Open both TIFFs and extract their data types and metadata
+    with rasterio.open(tiff1_path) as tiff1, rasterio.open(tiff2_path) as tiff2:
+        dtype1 = tiff1.dtypes[0]
+        dtype2 = tiff2.dtypes[0]
+
+        # Determine which TIFF has the smaller data type
+        dtype1_size = np.dtype(dtype1).itemsize
+        dtype2_size = np.dtype(dtype2).itemsize
+        
+        if dtype1_size > dtype2_size:
+            smaller_tiff = tiff2
+            larger_dtype = dtype1
+            updated_tiff_path = output_path
+            unchanged_tiff_path = tiff1_path
+        else:
+            smaller_tiff = tiff1
+            larger_dtype = dtype2
+            updated_tiff_path = output_path
+            unchanged_tiff_path = tiff2_path
+
+        print(f"Updating data type of {updated_tiff_path}")
+        # Update metadata to match the larger data type
+        updated_meta = smaller_tiff.meta.copy()
+        updated_meta.update(dtype=larger_dtype)
+
+        # Read the smaller TIFF's data and write it with the new dtype
+        with rasterio.open(output_path, 'w', **updated_meta) as dst:
+            for i in range(1, smaller_tiff.count + 1):
+                band = smaller_tiff.read(i)
+                dst.write(band.astype(larger_dtype), i)
+
+    # Return the paths in the original order
+    if dtype1_size > dtype2_size:
+        print(f"tif1 > tif2: {updated_tiff_path}")
+        return unchanged_tiff_path, updated_tiff_path
+    else:
+        print(f"tif1 < tif2: {updated_tiff_path}")
+        return updated_tiff_path, unchanged_tiff_path
+
 def reproject_to_image(template_path, target_path, output_path):
     """
-    Reprojects a target image to match the spatial resolution, transform, CRS, and nodata values of a template image.
+    Reprojects a target image to match the spatial resolution, transform, and CRS of a template image.
     Parameters:
     template_path (str): Path to the template image file which provides the reference resolution, transform, CRS, and nodata values.
     target_path (str): Path to the target image file that needs to be reprojected.
@@ -157,8 +458,6 @@ def reproject_to_image(template_path, target_path, output_path):
         ref_width = ref.width
         ref_height = ref.height
         ref_crs = ref.crs
-        ref_nodata = ref.nodata
-        ref_dtype = ref.dtypes[0]  # Get the data type of the reference image
 
     # Open the target image and update metadata to match reference
     with rasterio.open(target_path) as target:
@@ -169,22 +468,12 @@ def reproject_to_image(template_path, target_path, output_path):
             'width': ref_width,
             'transform': ref_transform,
             'crs': ref_crs,
-            'nodata': ref_nodata,
-            'dtype': ref_dtype  # Set the data type to match the reference image
         })
-
-        # Check and replace invalid nodata value
-        if ref_nodata is None or ref_nodata == float('-inf'):
-            ref_nodata = 0  # or another valid nodata value for uint16
-
-        target_meta['nodata'] = ref_nodata
 
         # Create output file and perform resampling
         with rasterio.open(output_path, 'w', **target_meta) as dst:
             for i in range(1, target.count + 1):  # Iterate over each band
                 target_band = target.read(i)
-                # replace the nodata value in the target image
-                target_band[target_band == target.nodata] = ref_nodata
                 reproject(
                     source=target_band,
                     destination=rasterio.band(dst, i),
@@ -193,15 +482,18 @@ def reproject_to_image(template_path, target_path, output_path):
                     dst_transform=ref_transform,
                     dst_crs=ref_crs,
                     resampling=Resampling.cubic,
-                    src_nodata=ref_nodata,
-                    dst_nodata=ref_nodata
+                    src_nodata=target.nodata,
+                    dst_nodata=target.nodata,  # keep the original no data value
+                    dst_resolution=(ref_transform[0], ref_transform[4])
                 )
 
     return output_path
 
 def write_window_to_tiff(window,src_path, output_path):
+    print(f"Window dimensions: {window.width}, {window.height}")
     with rasterio.open(src_path) as src:
         data = src.read(window=window)
+        print(f"Data shape: {data.shape}")
         # Update the transform to reflect the window's position
         transform = src.window_transform(window)
         # Define metadata for the new file
@@ -235,7 +527,7 @@ def find_shift(template: np.ndarray, target: np.ndarray) -> tuple:
     return shift, error, diffphase
 
 class CoregisterInterface:
-    def __init__(self, target_path, template_path, output_path, window_size: tuple=100, settings: dict={}, gaussian_weights: bool=True,verbose: bool = False,target_band: int = 1, template_band: int = 1):
+    def __init__(self, target_path, template_path, output_path, window_size:tuple=(100,100), settings: dict={}, gaussian_weights: bool=True,verbose: bool = False,target_band: int = 1, template_band: int = 1,matching_window_strategy:str = 'max_overlap'):
         self.verbose = verbose
 
         self.target_band = target_band
@@ -244,6 +536,7 @@ class CoregisterInterface:
         # Initialize paths
         self.target_path = target_path
         self.original_target_path = target_path # save this location in case we need to reproject the target
+        self.original_template_path = template_path
         self.template_path = template_path
         self.output_path = output_path
 
@@ -252,9 +545,19 @@ class CoregisterInterface:
         self.settings = settings
         self.gaussian_weights = gaussian_weights  # set this to True if you want to use Gaussian weights for SSIM (good for important pixels at the center of the image)
 
+        # Initialize properties
+        self.matching_window_strategy = matching_window_strategy # this is the startegy to use to find the matching window
+        # Options for the matching window strategy are:
+        # 1. max_overlap: finds the largest window that overlaps between the two images
+        # 2. max_center_size: finds the largest window centered at the center of the overlap
+        # 3. use_predetermined_window_size: uses the window size provided in the window_size parameter. Starts from the corner of the image until it finds a matching window of the specified size
+
         # Properties with default values
         self.scaling_factor: float = 1
         self.bounds: tuple = None
+
+        # Window size
+        self.min_window_size=(64, 64)  # if the window size is less than this, it will not be used
 
         # Track resolutions for target, template, and current resolution
         self.target_resolution = None
@@ -273,7 +576,6 @@ class CoregisterInterface:
         # Track whether the template has to be reprojected
         self.template_reprojected = False
 
-
         # Coregistration information
         self.coreg_info = {}
         self.get_coreg_info()
@@ -282,6 +584,15 @@ class CoregisterInterface:
         self._initialize_resolutions()
         self.set_scaling_factor()
 
+    
+        # make both the target and template the same data type (needed for histogram matching) (changes them to be the largest data type possible to avoid loss of information)
+        self.target_path, self.template_path = update_tiff_match_largest_dtype(self.target_path, self.template_path, os.path.join(os.path.dirname(self.output_path), 'changed_dtype.tif'))
+
+        # in this case the target should now have a dtype that matches the template
+
+        if verbose:
+            print(f"self.template_reprojected: {self.template_reprojected}")
+
         # reproject either the target or the template to match the other
         if self.template_reprojected:
             self.template_path = reproject_to_image(self.target_path, self.template_path, 'reprojected_template.tif')
@@ -289,29 +600,64 @@ class CoregisterInterface:
             reprojected_path = output_path.replace('.tif','_reprojected.tif')
             self.target_path = reproject_to_image(self.template_path, self.target_path, reprojected_path)
 
+        with rasterio.open(self.target_path) as src:
+            self.target_dtype = src.dtypes[0]
+
+        with rasterio.open(self.template_path) as src:
+            self.template_dtype = src.dtypes[0]
+
         if self.verbose:
             print(f"Reprojected image saved to: {output_path}")
 
-        self.template_nodata = self.read_no_data(self.template_path)
-        self.target_nodata = self.read_no_data(self.target_path)
+        max_window_size=get_max_overlap_window_size_in_pixels(self.target_path, self.template_path)
+        if self.verbose:
+            print(f"Max window size: {max_window_size}")
+        if max_window_size <16:
+            raise ValueError(f"The overlapping region was smaller than 16 pixels. Coregistraion is not possible. ")
+        
+
 
         # get the bounds of the matching region
-        self.bounds = self.find_matching_bounds(self.target_path, self.template_path)
+        # self.bounds = self.find_matching_bounds(self.target_path, self.template_path)
+        # if self.matching_window_strategy == 'max_overlap':
+        #     max_size, bounds = get_max_valid_window_size_and_bounds(self.target_path, self.template_path)
+        #     print(f"max_size: {max_size}, bounds: {bounds}")
+        #     self.window_size = (max_size, max_size)
+        #     self.bounds = bounds
+        if self.matching_window_strategy == 'max_center_size': # finds the largest window starting with the initital window size at the center of the overlap
+            try:
+                best_point = find_best_starting_point(self.target_path, self.template_path)
+                # the bounds are (row_start,col_start,row_end,col_end)
+                window_size, best_bounds = get_valid_window_with_fallback(self.target_path, self.template_path, start_point=best_point,initial_window_size=self.window_size,min_window_size=self.min_window_size)
+                if verbose:
+                    print(f"best_point: {best_point}, window_size: {window_size}, best_bounds: {best_bounds}")
+            except Exception as e:
+                import traceback
+                print(f"Error: {e}")
+                traceback.print_exc()
+                self.best_bounds = (None, None, None, None)
+            else:
+                self.window_size = window_size
+                self.bounds = best_bounds
+        elif self.matching_window_strategy == 'use_predetermined_window_size': # finds the first window of the specified size within the overlap
+            self.bounds = self.find_matching_bounds(self.target_path, self.template_path)
+        
+        self.coreg_info.update({'window_size': self.window_size})
+
         if self.bounds == (None, None, None, None):
-            self.coreg_info.update({'description': 'no valid matching window found of size '+str(self.window_size)})
+            self.coreg_info.update({'description': 'no valid matching window found of size '+str(self.window_size)+f'of at least {self.min_window_size} pixels'})
             self.coreg_info.update({'success': 'False'})
         else:
             # save a figure of the matching region
-            self.write_matching_window_tiffs()
-            self.save_matching_region_figure()
-
-        # self.bounds = self.get_valid_window(self.target_path, self.template_path, self.window_size)
-
-
+            if verbose:
+                self.write_matching_window_tiffs()
+                self.save_matching_region_figure()
 
     def write_matching_window_tiffs(self):
         row_start, col_start, row_end, col_end = self.bounds
+        print(f"bounds: {row_start, col_start, row_end, col_end}")
         window = rasterio.windows.Window.from_slices((row_start, row_end), (col_start, col_end))
+        print(f"window: {window}")
         # save the cropped tiffs
         filename = os.path.basename(self.template_path).split('.')[0] + "_cropped.tif"
         output_dir = os.path.dirname(self.output_path)
@@ -361,6 +707,7 @@ class CoregisterInterface:
                 'original_ssim': 0,
                 'coregistered_ssim': 0,
                 "change_ssim": 0,
+                "window_size": self.window_size,
             }
 
         # make the shifts json serializeable
@@ -492,10 +839,6 @@ class CoregisterInterface:
             # Check for valid window_size regions within the overlap
             for row in range(row_start, row_end - self.window_size[0] + 1):
                 for col in range(col_start, col_end - self.window_size[1] + 1):
-                    # print(f"Checking row {row}, col {col}")
-                    # print(f"row + self.window_size[0] : {row + self.window_size[0]}")
-                    # print(f"col + self.window_size[1] : {col + self.window_size[1]}")
-
                     # Read the corresponding data for both TIFFs
                     data1_box = data1[row:row + self.window_size[0], col:col + self.window_size[1]]
                     data2_box = data2[row:row + self.window_size[0], col:col + self.window_size[1]]
@@ -506,18 +849,12 @@ class CoregisterInterface:
                             print(f"Found valid region at row {row}, col {col} , row + self.window_size[0] : {row + self.window_size[0]} , col + self.window_size[1] : {col + self.window_size[1]}")
                         return row, col, row + self.window_size[0], col + self.window_size[1]
 
-        print(f"No valid {self.window_size} region found without NoData pixels.")
-        self.coreg_info.update({'description': f'no valid matching window found of size '+str(self.window_size)}
-        )
-        self.coreg_info.update({'success': 'False'})
-        # raise Exception(f"No valid region found without NoData pixels of the specified window size {self.window_size}.")
         return None, None, None, None  
 
 
     def apply_shift(self):
         # Apply the calculated shifts to the target image
         apply_shift_to_tiff(self.original_target_path, self.output_path, (self.coreg_info['shift_y'], self.coreg_info['shift_x']),verbose=self.verbose)
-        # apply_shift_to_tiff_old_method(self.original_target_path, self.output_path, (self.coreg_info['shift_y'], self.coreg_info['shift_x']),verbose=self.verbose)
 
 
     def get_resolution(self, image_path):
