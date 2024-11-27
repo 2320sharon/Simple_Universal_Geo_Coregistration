@@ -587,7 +587,7 @@ class CoregisterInterface:
             matching_window_strategy (str, optional): Strategy to use for finding the matching window. Defaults to 'max_overlap'.
                 Two options available:
                 ----------------------
-                1. max_overlap (default)
+                1. max_center_size (default)
                    - It starts with the initial window size at the center of the overlap and shrinks until it finds a matching window or the minimum window size is reached.
                 2. use_predetermined_window_size: 
                     uses the window size provided in the window_size parameter. Starts from the corner of the image until it finds a matching window of the specified size
