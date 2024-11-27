@@ -19,6 +19,30 @@ matplotlib.use('Agg')  # Use Agg backend for non-GUI rendering
 lock = threading.Lock()
 
 
+#-----------
+# Created by Sharon Fitzpatrick Batiste
+# Date: 2024 - 11 -10
+#-----------
+# Remaining tasks
+# - Determine if the scale factor is needed
+# - Make the sure the temporary files that are created to reproject the template are deleted (they aren't right now)
+# - Make sure it works even if the template is reprojected
+# - Make sure it works even if the template and target are the same resolution
+
+
+def read_resolutions(tiff_path):
+    """
+    Reads the spatial resolution of a TIFF file.
+    
+    Parameters:
+    tiff_path (str): Path to the TIFF file.
+    
+    Returns:
+    tuple: The spatial resolution of the TIFF file as (x_resolution, y_resolution).
+    """
+    with rasterio.open(tiff_path) as src:
+        return src.res
+
 def get_max_overlap_window_size_in_pixels(tiff1_path, tiff2_path):
     """
     Determines the largest possible square window size (in pixels) 
@@ -530,7 +554,45 @@ def find_shift(template: np.ndarray, target: np.ndarray) -> tuple:
     return shift, error, diffphase
 
 class CoregisterInterface:
-    def __init__(self, target_path, template_path, output_path, window_size:tuple=(100,100), settings: dict={}, gaussian_weights: bool=True,verbose: bool = False,target_band: int = 1, template_band: int = 1,matching_window_strategy:str = 'max_overlap'):
+    def __init__(self, 
+             target_path: str, 
+             template_path: str, 
+             output_path: str, 
+             window_size: tuple = (100, 100), 
+             settings: dict = {}, 
+             gaussian_weights: bool = True, 
+             verbose: bool = False, 
+             target_band: int = 1, 
+             template_band: int = 1, 
+             matching_window_strategy: str = 'max_overlap',
+             min_window_size: tuple = (64, 64),):
+        """
+        Initialize the Coregistration class.
+
+        Args:
+            target_path (str): Path to the target image.
+            template_path (str): Path to the template image.
+            output_path (str): Path to save the output image.
+            window_size (tuple, optional): Size of the window for coregistration. Defaults to (100, 100).
+            settings (dict, optional): Additional settings for coregistration. Defaults to {}.
+                Available Settings:
+                -------------------
+                    max_translation (float): Maximum translation (in meters) allowed for coregistration. Defaults to 1000m.
+                    min_translation (float): Minimum translation (in meters) allowed for coregistration. Defaults to -1000m.
+            
+            gaussian_weights (bool, optional): Whether to use Gaussian weights for SSIM. Defaults to True.
+            verbose (bool, optional): Whether to print verbose output. Defaults to False.
+            target_band (int, optional): Band number to use from the target image. Defaults to 1.
+            template_band (int, optional): Band number to use from the template image. Defaults to 1.
+            matching_window_strategy (str, optional): Strategy to use for finding the matching window. Defaults to 'max_overlap'.
+                Two options available:
+                ----------------------
+                1. max_overlap (default)
+                   - It starts with the initial window size at the center of the overlap and shrinks until it finds a matching window or the minimum window size is reached.
+                2. use_predetermined_window_size: 
+                    uses the window size provided in the window_size parameter. Starts from the corner of the image until it finds a matching window of the specified size
+            min_window_size (tuple, optional): Minimum window size for coregistration. Defaults to (64, 64).
+        """
         self.verbose = verbose
 
         self.target_band = target_band
@@ -559,7 +621,7 @@ class CoregisterInterface:
         self.bounds: tuple = None
 
         # Window size
-        self.min_window_size=(64, 64)  # if the window size is less than this, it will not be used
+        self.min_window_size= min_window_size   # if the window size is less than this, it will not be used
 
         # Track resolutions for target, template, and current resolution
         self.target_resolution = None
@@ -685,6 +747,27 @@ class CoregisterInterface:
 
 
     def get_coreg_info(self):
+        """
+        Retrieves and initializes coregistration information.
+        This method checks if the coreg_info attribute is an empty dictionary. If it is, it initializes it with default values.
+        It then ensures that certain fields within coreg_info are JSON serializable by converting them to float.
+        Returns:
+            dict: A dictionary containing coregistration information with the following keys:
+            - 'shift_x' (float): Shift in the x direction, after being scaled to the target resolution.
+            - 'shift_y' (float): Shift in the y direction, after being scaled to the target resolution.
+            - 'shift_x_meters' (float): Shift in the x direction in meters.
+            - 'shift_y_meters' (float): Shift in the y direction in meters.
+            - 'initial_shift_x' (float): Initial shift in the x direction.
+            - 'initial_shift_y' (float): Initial shift in the y direction.
+            - 'error' (float): Error value.
+            - 'qc' (int): Quality control value.
+            - 'description' (str): Description of the coregistration.
+            - 'success' (str): Success status of the coregistration.
+            - 'original_ssim' (float): Original Structural Similarity Index (SSIM).
+            - 'coregistered_ssim' (float): Coregistered Structural Similarity Index (SSIM).
+            - 'change_ssim' (float): Change in Structural Similarity Index (SSIM).
+            - 'window_size' (int): Window size used for coregistration.
+        """
         if self.coreg_info == {}:
             self.coreg_info = {
                 'shift_x': 0,
@@ -717,7 +800,15 @@ class CoregisterInterface:
 
         return self.coreg_info
 
-    def quality_control_shift(self,shift):
+    def quality_control_shift(self,shift:tuple,):
+        """
+        Check if the shift provided in meters is lower than the maximum translation and higher than the minimum translation.
+        Returns 1 if the shift passes the quality control, otherwise 0.
+        Args:
+            shift (tuple)(in meters): A tuple containing the shift values (x, y).
+        Returns:
+            int: Returns 1 if the shift values pass the quality control, otherwise 0.
+        """
         qc = 1
 
         if 'max_translation' in self.settings:
@@ -730,6 +821,18 @@ class CoregisterInterface:
         return qc
 
     def _initialize_resolutions(self):
+        """
+        Initializes or calculates the resolutions for the target and template images.
+
+        This method sets the following attributes:
+        - target_resolution: The resolution of the target image.
+        - original_target_resolution: The original resolution of the target image, 
+          which is needed later to scale the shifts in meters back to pixels.
+        - template_resolution: The resolution of the template image.
+
+        It uses the `get_resolution` method to obtain the resolutions based on the 
+        provided file paths (`target_path` and `template_path`).
+        """
         # Method to initialize or calculate the target and template resolutions
         self.target_resolution = self.get_resolution(self.target_path)
         self.original_target_resolution = self.target_resolution   # this is needed later to scale the shifts in meters back to pixels
@@ -739,7 +842,7 @@ class CoregisterInterface:
         if self.target_resolution is None or self.template_resolution is None:
             self._initialize_resolutions()
         
-        # set the current resolution to whichever is lower (aka worse)
+        # set the current resolution to whichever is lower (aka worse) (REMEMBER THIS MEANS THE VALUE IS HIGHER)
         if self.target_resolution[0] > self.template_resolution[0]:
             if self.verbose:
                 print(f"target res {self.target_resolution} >  template {self.template_resolution}")
@@ -777,20 +880,15 @@ class CoregisterInterface:
             template_window, target_window, upsample_factor=100,
         )
 
-
+        # convert the shift to meters ( shift is in Y X format in pixels)
+        shift_meters = (shift[0]*self.current_resolution[1], shift[1]*self.current_resolution[0])
 
         # 4. This is where quality control would go @ todo
-        shift_qc = self.quality_control_shift(initial_shift)
-
+        shift_qc = self.quality_control_shift(shift_meters)
         if not shift_qc:
             shift = (0,0)
         else:
             shift = initial_shift
-
-        # convert the shift to meters ( shift is in Y X format in pixels)
-        # shift_meters = (shift[1]*self.current_resolution[0], shift[0]*self.current_resolution[1])
-
-        shift_meters = (shift[0]*self.current_resolution[1], shift[1]*self.current_resolution[0])
 
         # convert the meters to the target resolution in pixels
         shift = (shift_meters[0]/self.original_target_resolution[1], shift_meters[1]/self.original_target_resolution[0])
