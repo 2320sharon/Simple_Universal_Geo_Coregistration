@@ -416,11 +416,14 @@ def update_tiff_match_largest_dtype(tiff1_path, tiff2_path, output_path):
             larger_dtype = dtype1
             updated_tiff_path = output_path
             unchanged_tiff_path = tiff1_path
-        else:
+        elif dtype1_size < dtype2_size:
             smaller_tiff = tiff1
             larger_dtype = dtype2
             updated_tiff_path = output_path
             unchanged_tiff_path = tiff2_path
+        else:
+            # If the data types are the same, no changes are needed
+            return tiff1_path, tiff2_path
 
         print(f"Updating data type of {updated_tiff_path}")
         # Update metadata to match the larger data type
@@ -548,9 +551,8 @@ class CoregisterInterface:
         # Initialize properties
         self.matching_window_strategy = matching_window_strategy # this is the startegy to use to find the matching window
         # Options for the matching window strategy are:
-        # 1. max_overlap: finds the largest window that overlaps between the two images
-        # 2. max_center_size: finds the largest window centered at the center of the overlap
-        # 3. use_predetermined_window_size: uses the window size provided in the window_size parameter. Starts from the corner of the image until it finds a matching window of the specified size
+        # 1. max_center_size: finds the largest window centered at the center of the overlap
+        # 2. use_predetermined_window_size: uses the window size provided in the window_size parameter. Starts from the corner of the image until it finds a matching window of the specified size
 
         # Properties with default values
         self.scaling_factor: float = 1
@@ -615,15 +617,6 @@ class CoregisterInterface:
         if max_window_size <16:
             raise ValueError(f"The overlapping region was smaller than 16 pixels. Coregistraion is not possible. ")
         
-
-
-        # get the bounds of the matching region
-        # self.bounds = self.find_matching_bounds(self.target_path, self.template_path)
-        # if self.matching_window_strategy == 'max_overlap':
-        #     max_size, bounds = get_max_valid_window_size_and_bounds(self.target_path, self.template_path)
-        #     print(f"max_size: {max_size}, bounds: {bounds}")
-        #     self.window_size = (max_size, max_size)
-        #     self.bounds = bounds
         if self.matching_window_strategy == 'max_center_size': # finds the largest window starting with the initital window size at the center of the overlap
             try:
                 best_point = find_best_starting_point(self.target_path, self.template_path)
@@ -927,6 +920,8 @@ class CoregisterInterface:
         if self.coreg_info['qc']:
             self.calc_coregistered_ssim()
             self.calc_improvement()
+
+        #@todo make sure to remove the reprojected template and target images including the file that had its dtype changed
 
 # Dev notes: See coregister_class_tester.py for a test of this class
 
