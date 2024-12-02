@@ -29,6 +29,9 @@ lock = threading.Lock()
 # - Make sure it works even if the template is reprojected
 # - Make sure it works even if the template and target are the same resolution
 
+# 12/2/24
+# remove scale factor (not used since we determine the shift in meters)
+# remove the temporary files that are created to reproject the template
 
 def read_resolutions(tiff_path):
     """
@@ -412,61 +415,6 @@ def read_bounds(tif_path, row_start, col_start, row_end, col_end,band_number=1):
         data_box = src.read(band_number, window=window)
         return data_box
 
-def update_tiff_match_largest_dtype(tiff1_path, tiff2_path, output_path):
-    """
-    Changes the data type of the smaller data type TIFF to match the larger data type TIFF
-    without scaling any values and returns the original paths in the input order.
-    
-    Parameters:
-    tiff1_path (str): Path to the first TIFF file.
-    tiff2_path (str): Path to the second TIFF file.
-    output_path (str): Path where the TIFF file with updated dtype will be saved.
-    
-    Returns:
-    tuple: Paths to the TIFFs in the order they were passed, with the smaller TIFF's
-           path replaced by the updated output path.
-    """
-    # Open both TIFFs and extract their data types and metadata
-    with rasterio.open(tiff1_path) as tiff1, rasterio.open(tiff2_path) as tiff2:
-        dtype1 = tiff1.dtypes[0]
-        dtype2 = tiff2.dtypes[0]
-
-        # Determine which TIFF has the smaller data type
-        dtype1_size = np.dtype(dtype1).itemsize
-        dtype2_size = np.dtype(dtype2).itemsize
-        
-        if dtype1_size > dtype2_size:
-            smaller_tiff = tiff2
-            larger_dtype = dtype1
-            updated_tiff_path = output_path
-            unchanged_tiff_path = tiff1_path
-        elif dtype1_size < dtype2_size:
-            smaller_tiff = tiff1
-            larger_dtype = dtype2
-            updated_tiff_path = output_path
-            unchanged_tiff_path = tiff2_path
-        else:
-            # If the data types are the same, no changes are needed
-            return tiff1_path, tiff2_path
-
-        print(f"Updating data type of {updated_tiff_path}")
-        # Update metadata to match the larger data type
-        updated_meta = smaller_tiff.meta.copy()
-        updated_meta.update(dtype=larger_dtype)
-
-        # Read the smaller TIFF's data and write it with the new dtype
-        with rasterio.open(output_path, 'w', **updated_meta) as dst:
-            for i in range(1, smaller_tiff.count + 1):
-                band = smaller_tiff.read(i)
-                dst.write(band.astype(larger_dtype), i)
-
-    # Return the paths in the original order
-    if dtype1_size > dtype2_size:
-        print(f"tif1 > tif2: {updated_tiff_path}")
-        return unchanged_tiff_path, updated_tiff_path
-    else:
-        print(f"tif1 < tif2: {updated_tiff_path}")
-        return updated_tiff_path, unchanged_tiff_path
 
 def reproject_to_image(template_path, target_path, output_path):
     """
@@ -617,8 +565,12 @@ class CoregisterInterface:
         # 2. use_predetermined_window_size: uses the window size provided in the window_size parameter. Starts from the corner of the image until it finds a matching window of the specified size
 
         # Properties with default values
-        self.scaling_factor: float = 1
         self.bounds: tuple = None
+
+        # track files that need to be removed after coregistration is complete
+        self.updated_dtype_file = ""
+        self.reprojected_file = ""
+
 
         # Window size
         self.min_window_size= min_window_size   # if the window size is less than this, it will not be used
@@ -650,7 +602,7 @@ class CoregisterInterface:
 
     
         # make both the target and template the same data type (needed for histogram matching) (changes them to be the largest data type possible to avoid loss of information)
-        self.target_path, self.template_path = update_tiff_match_largest_dtype(self.target_path, self.template_path, os.path.join(os.path.dirname(self.output_path), 'changed_dtype.tif'))
+        self.target_path, self.template_path = self.update_tiff_match_largest_dtype(self.target_path, self.template_path, os.path.join(os.path.dirname(self.output_path), 'changed_dtype.tif'))
 
         # in this case the target should now have a dtype that matches the template
 
@@ -658,11 +610,13 @@ class CoregisterInterface:
             print(f"self.template_reprojected: {self.template_reprojected}")
 
         # reproject either the target or the template to match the other
-        if self.template_reprojected:
+        if self.template_reprojected: # if this runs then the template was reprojected
             self.template_path = reproject_to_image(self.target_path, self.template_path, 'reprojected_template.tif')
+            self.reprojected_file = self.template_path
         else: # this is genrally what will run
             reprojected_path = output_path.replace('.tif','_reprojected.tif')
             self.target_path = reproject_to_image(self.template_path, self.target_path, reprojected_path)
+            self.reprojected_file = self.target_path  # this file will be deleted after coregistration is complete
 
         with rasterio.open(self.target_path) as src:
             self.target_dtype = src.dtypes[0]
@@ -677,7 +631,9 @@ class CoregisterInterface:
         if self.verbose:
             print(f"Max window size: {max_window_size}")
         if max_window_size <16:
+            self.clear_temp_files()
             raise ValueError(f"The overlapping region was smaller than 16 pixels. Coregistraion is not possible. ")
+            
         
         if self.matching_window_strategy == 'max_center_size': # finds the largest window starting with the initital window size at the center of the overlap
             try:
@@ -691,6 +647,7 @@ class CoregisterInterface:
                 print(f"Error: {e}")
                 traceback.print_exc()
                 self.best_bounds = (None, None, None, None)
+                self.clear_temp_files()
             else:
                 self.window_size = window_size
                 self.bounds = best_bounds
@@ -702,11 +659,81 @@ class CoregisterInterface:
         if self.bounds == (None, None, None, None):
             self.coreg_info.update({'description': 'no valid matching window found of size '+str(self.window_size)+f'of at least {self.min_window_size} pixels'})
             self.coreg_info.update({'success': 'False'})
+            self.clear_temp_files()
         else:
             # save a figure of the matching region
             if verbose:
                 self.write_matching_window_tiffs()
                 self.save_matching_region_figure()
+
+    def clear_temp_files(self):
+        if self.reprojected_file:
+            if self.verbose:
+                print(f"Removing reprojected file: {self.reprojected_file}")
+            os.remove(self.reprojected_file)
+        if self.updated_dtype_file:
+            if self.verbose:
+                print(f"Removing updated dtype file: {self.updated_dtype_file}")
+            os.remove(self.updated_dtype_file)
+
+    def update_tiff_match_largest_dtype(self,tiff1_path, tiff2_path, output_path):
+        """
+        Changes the data type of the smaller data type TIFF to match the larger data type TIFF
+        without scaling any values and returns the original paths in the input order.
+        
+        Parameters:
+        tiff1_path (str): Path to the first TIFF file.
+        tiff2_path (str): Path to the second TIFF file.
+        output_path (str): Path where the TIFF file with updated dtype will be saved.
+        
+        Returns:
+        tuple: Paths to the TIFFs in the order they were passed, with the smaller TIFF's
+            path replaced by the updated output path.
+        """
+        # Open both TIFFs and extract their data types and metadata
+        with rasterio.open(tiff1_path) as tiff1, rasterio.open(tiff2_path) as tiff2:
+            dtype1 = tiff1.dtypes[0]
+            dtype2 = tiff2.dtypes[0]
+
+            # Determine which TIFF has the smaller data type
+            dtype1_size = np.dtype(dtype1).itemsize
+            dtype2_size = np.dtype(dtype2).itemsize
+            
+            if dtype1_size > dtype2_size:
+                smaller_tiff = tiff2
+                larger_dtype = dtype1
+                updated_tiff_path = output_path
+                unchanged_tiff_path = tiff1_path
+            elif dtype1_size < dtype2_size:
+                smaller_tiff = tiff1
+                larger_dtype = dtype2
+                updated_tiff_path = output_path
+                unchanged_tiff_path = tiff2_path
+            else:
+                # If the data types are the same, no changes are needed
+                return tiff1_path, tiff2_path
+
+            print(f"Updating data type of {updated_tiff_path}")
+            # Update metadata to match the larger data type
+            updated_meta = smaller_tiff.meta.copy()
+            updated_meta.update(dtype=larger_dtype)
+
+            # Read the smaller TIFF's data and write it with the new dtype
+            with rasterio.open(output_path, 'w', **updated_meta) as dst:
+                for i in range(1, smaller_tiff.count + 1):
+                    band = smaller_tiff.read(i)
+                    dst.write(band.astype(larger_dtype), i)
+
+        # Save the updated path so it can be deleted later
+        self.updated_dtype_file = updated_tiff_path
+
+        # Return the paths in the original order
+        if dtype1_size > dtype2_size:
+            print(f"tif1 > tif2: {updated_tiff_path}")
+            return unchanged_tiff_path, updated_tiff_path
+        else:
+            print(f"tif1 < tif2: {updated_tiff_path}")
+            return updated_tiff_path, unchanged_tiff_path
 
     def write_matching_window_tiffs(self):
         row_start, col_start, row_end, col_end = self.bounds
@@ -847,24 +874,20 @@ class CoregisterInterface:
             if self.verbose:
                 print(f"target res {self.target_resolution} >  template {self.template_resolution}")
             self.current_resolution = self.target_resolution  # target resolution is worse
-            self.scaling_factor =  1
             self.template_reprojected = True # the template has to be reprojected to match the target resolution
         elif self.target_resolution[0] == self.template_resolution[0]:
             if self.verbose:
                 print(f"target res {self.target_resolution} ==  template {self.template_resolution}")
             self.current_resolution = self.target_resolution
-            self.scaling_factor = 1
         else:
             if self.verbose:
                 print(f"target res {self.target_resolution} <  template {self.template_resolution}")
             self.current_resolution = self.template_resolution
-            self.scaling_factor = self.template_resolution[0] / self.target_resolution[0]
             
         self.get_coreg_info()
-        self.coreg_info.update({'scaling_factor': self.scaling_factor})
 
         if self.verbose:
-            print(f"Scaling factor: {self.scaling_factor} and current resolution: {self.current_resolution}")
+            print(f"Current resolution: {self.current_resolution}")
 
 
     def identify_shifts(self):
@@ -892,10 +915,6 @@ class CoregisterInterface:
 
         # convert the meters to the target resolution in pixels
         shift = (shift_meters[0]/self.original_target_resolution[1], shift_meters[1]/self.original_target_resolution[0])
-
-        # get the shift_x and shift_y scaled if the target was reprojected
-        # if not self.template_reprojected:
-        #     shift = shift[0]*self.scaling_factor, shift[1]*self.scaling_factor
 
         self.coreg_info.update({        
                 'shift_x': shift[1],
@@ -1018,7 +1037,8 @@ class CoregisterInterface:
         if self.coreg_info['qc']:
             self.calc_coregistered_ssim()
             self.calc_improvement()
-
+        
+        self.clear_temp_files()
         #@todo make sure to remove the reprojected template and target images including the file that had its dtype changed
 
 # Dev notes: See coregister_class_tester.py for a test of this class
