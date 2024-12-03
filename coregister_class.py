@@ -32,6 +32,8 @@ lock = threading.Lock()
 # 12/2/24
 # remove scale factor (not used since we determine the shift in meters)
 # remove the temporary files that are created to reproject the template
+# works even if the template is reprojected
+# works even if the template and target are the same resolution
 
 def read_resolutions(tiff_path):
     """
@@ -616,7 +618,7 @@ class CoregisterInterface:
         else: # this is genrally what will run
             reprojected_path = output_path.replace('.tif','_reprojected.tif')
             self.target_path = reproject_to_image(self.template_path, self.target_path, reprojected_path)
-            self.reprojected_file = self.target_path  # this file will be deleted after coregistration is complete
+            self.reprojected_file = reprojected_path  # this file will be deleted after coregistration is complete
 
         with rasterio.open(self.target_path) as src:
             self.target_dtype = src.dtypes[0]
