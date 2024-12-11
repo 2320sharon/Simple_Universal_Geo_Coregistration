@@ -320,6 +320,29 @@ def copy_files_for_satellites(filenames:list[str],coreg_dir,unregistered_dir,sat
         elif satname.lower() == 'planet':
             print("Planet files not yet supported.")
 
+def copy_meta_for_satellites(filenames:list[str],coreg_dir,unregistered_dir,satellites:list[str]):
+    """
+    Copies meta files for different satellite types into their respective directories.
+
+    Parameters:
+
+    filenames (list[str]): List of filenames to be copied.
+    coreg_dir (str): Directory where coregistered files are stored.
+    unregistered_dir (str): Directory where unregistered files are stored.
+    satellites (list[str]): List of satellite names.
+
+    If the satellite is 'Planet', it prints a message indicating that Planet files are not yet supported.
+    """
+    # make a subdirectory for each satellite
+    for satname in satellites:
+        meta_dir = os.path.join(unregistered_dir, satname, 'meta')
+        if not os.path.exists(meta_dir):
+            continue
+        # example metadata file: 2022-05-17-22-08-11_L9_ID_1_datetime11-04-24__04_30_52.txt
+        # example ms file : 2022-04-01-21-56-37_L9_ID_1_datetime11-04-24__04_30_52_ms.tif
+        meta_filenames = [f.replace('_ms.tif', '.txt') for f in filenames]
+        copy_files_to_dir(meta_filenames,meta_dir,os.path.join(coreg_dir, satname,'meta'))
+
 
 def get_filepaths_to_folders(inputs, satname,coregistered_name:str=None):
     """
@@ -426,7 +449,7 @@ def create_coregistered_jpgs(inputs, settings: dict):
                 if not os.path.exists(os.path.join(ms_dir, filename)):
                     print(f"File not found: {filename}")
                     continue
-
+                
                 SDS_preprocess.save_single_jpg(
                     filename= filename,#filename=im_fn["ms"],
                     tif_paths=tif_paths,
