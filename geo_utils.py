@@ -34,16 +34,16 @@ def apply_shifts_to_files(df: pd.DataFrame, valid_files: list, src_dir: str, dst
             apply_shift_to_tiff(src_path, dst_path, (shift_y, shift_x), verbose=verbose)
             # print(f"Applied shift to {os.path.basename(dst_path)}")
 
-def apply_shifts_for_satellites(df,passed_coregs,coreg_dir,unregistered_dir,satellites:list[str]):
+def apply_shifts_for_satellites(df,passed_coregs,coreg_dir,unregistered_dir,satellites:list[str],verbose:bool=False):
     # make a subdirectory for each satellite
     for satname in satellites:
         mask_dir = os.path.join(unregistered_dir, satname, 'mask')
-        apply_shifts_to_files(df, passed_coregs, mask_dir, coreg_dir, satname, 'mask')
+        apply_shifts_to_files(df, passed_coregs, mask_dir, coreg_dir, satname, 'mask',verbose=verbose)
         if satname == 'S2':
             swir_dir = os.path.join(unregistered_dir, satname, 'swir')
-            apply_shifts_to_files(df, passed_coregs, swir_dir, coreg_dir, satname, 'swir')
+            apply_shifts_to_files(df, passed_coregs, swir_dir, coreg_dir, satname, 'swir',verbose=verbose)
         elif satname in ['L7','L8','L9']:
             pan_dir = os.path.join(unregistered_dir, satname, 'pan')
-            apply_shifts_to_files(df, passed_coregs, pan_dir, coreg_dir, satname, 'pan')
+            apply_shifts_to_files(df, passed_coregs, pan_dir, coreg_dir, satname, 'pan',verbose=verbose)
         elif satname.lower() == 'planet':
             print("Planet files not yet supported.")
