@@ -12,10 +12,13 @@ from rasterio.warp import reproject, Resampling
 from scipy.spatial.distance import cdist
 from skimage import exposure
 from skimage.metrics import structural_similarity as ssim
+from numpy.fft import fft2, ifft2, fftshift
 from skimage.registration import phase_cross_correlation
+from math import sqrt
+import hashlib
 
-matplotlib.use('Agg')  # Use Agg backend for non-GUI rendering
-
+# matplotlib.use('Agg')  # Use Agg backend for non-GUI rendering
+# plt.ion()  # Turn on interactive mode
 lock = threading.Lock()
 
 
@@ -34,6 +37,148 @@ lock = threading.Lock()
 # remove the temporary files that are created to reproject the template
 # works even if the template is reprojected
 # works even if the template and target are the same resolution
+
+
+def find_best_window_in_combined_mask(tiff1_path, tiff2_path, min_height=16, min_width=16, max_height=256, max_width=256, alpha=0.6, beta=0.4):
+    """
+    Finds the best window within the combined mask using constraints on size, center proximity, and max dimensions.
+
+    Args:
+        combined_mask (numpy.ndarray): Boolean mask where True indicates NoData pixels.
+        min_height (int): Minimum allowed height of the window.
+        min_width (int): Minimum allowed width of the window.
+        max_height (int, optional): Maximum allowed height of the window.
+        max_width (int, optional): Maximum allowed width of the window.
+        alpha (float): Weight for the area in the scoring function.
+        beta (float): Weight for the distance to the center in the scoring function.
+
+    Returns:
+        tuple: Coordinates of the best window as (row_start, col_start, row_end, col_end).
+               If no valid window is found, raises a ValueError.
+    """
+    combined_mask = get_combined_mask(tiff1_path, tiff2_path)
+
+    # Create a unique hash for the combined_mask
+    def mask_to_hash(mask):
+        return hashlib.md5(mask.tobytes()).hexdigest()
+
+    # Cache dictionary
+    if not hasattr(find_best_window_in_combined_mask, "_cache"):
+        find_best_window_in_combined_mask._cache = {}
+
+    cache = find_best_window_in_combined_mask._cache
+
+    # Generate hash of the combined_mask
+    mask_hash = mask_to_hash(combined_mask)
+
+    # If result is cached, return it
+    if mask_hash in cache:
+        return cache[mask_hash]
+
+    # Ensure mask is inverted (0 = NoData, 1 = Valid Data)
+    valid_mask = ~combined_mask
+
+    rows, cols = valid_mask.shape
+    histogram = np.zeros(cols, dtype=int)
+
+    # Center of the mask
+    center_row, center_col = rows / 2, cols / 2
+    max_area = valid_mask.size
+    max_center_dist = sqrt(center_row**2 + center_col**2)
+
+    all_rectangles = []
+
+    # Process each row to build histograms and collect all valid rectangles
+    for r in range(rows):
+        for c in range(cols):
+            histogram[c] = histogram[c] + 1 if valid_mask[r, c] else 0
+
+            # Limit the histogram height to max_height, if specified
+            if max_height and histogram[c] > max_height:
+                histogram[c] = max_height
+
+        # Generate rectangles from the histogram
+        for i in range(cols):
+            min_height = histogram[i]
+            for j in range(i, min(i + (max_width or cols), cols)):
+                min_height = min(min_height, histogram[j])
+                width = j - i + 1
+
+                # Skip rectangles smaller than min dimensions
+                if min_height < min_height or width < min_width:
+                    continue
+
+                # Skip rectangles with odd dimensions
+                if min_height % 2 != 0 or width % 2 != 0:
+                    continue
+
+                # Add rectangle (row_end, col_start, col_end, height)
+                all_rectangles.append((r, i, j, min_height))
+
+    # Find the best rectangle based on scoring
+    best_score = float('-inf')
+    best_coords = None
+
+    for rect in all_rectangles:
+        rect_row_end, rect_col_start, rect_col_end, rect_height = rect
+        rect_width = rect_col_end - rect_col_start + 1
+        rect_row_start = rect_row_end - rect_height + 1
+
+        # Calculate area and center distance
+        rect_area = rect_width * rect_height
+        rect_center_row = (rect_row_start + rect_row_end) / 2
+        rect_center_col = (rect_col_start + rect_col_end) / 2
+        center_dist = sqrt((center_row - rect_center_row)**2 + (center_col - rect_center_col)**2)
+
+        # Normalize metrics
+        normalized_area = rect_area / max_area
+        normalized_center_dist = center_dist / max_center_dist
+
+        # Calculate score
+        score = alpha * normalized_area - beta * normalized_center_dist
+
+        if score > best_score:
+            best_score = score
+            best_coords = (rect_row_start, rect_col_start, rect_row_end, rect_col_end)
+
+    if not best_coords:
+        raise ValueError("No valid window found in the combined mask.")
+
+    row_start, col_start, row_end, col_end = best_coords
+    window_size_x = col_end - col_start + 1
+    window_size_y = row_end - row_start + 1
+
+
+    #row_start, col_start, row_end, col_end = best_coords
+    # best coords are  xmin : coords[1] , ymin : coords[0] , xmax : coords[3] , ymax : coords[2]
+    cache[mask_hash] = (window_size_x, window_size_y),best_coords
+
+    return (window_size_x, window_size_y),best_coords
+
+def calculate_shift_reliability(template, target,):
+    # Step 2: Compute the Cross Power Spectrum (CPS)
+    fft_template = fft2(template)
+    fft_target = fft2(target)
+    eps = 1e-15  # Avoid division by zero
+    cps = fft_template * np.conjugate(fft_target) / (np.abs(fft_template) * np.abs(fft_target) + eps)
+    correlation_map = fftshift(np.abs(ifft2(cps)))
+
+    # Step 3: Locate the peak in the correlation map
+    peak_row, peak_col = np.unravel_index(np.argmax(correlation_map), correlation_map.shape)
+    peak_strength = np.mean(correlation_map[peak_row - 1:peak_row + 2, peak_col - 1:peak_col + 2])
+
+    # Step 4: Mask the peak and calculate background statistics
+    correlation_map_masked = correlation_map.copy()
+    correlation_map_masked[peak_row - 1:peak_row + 2, peak_col - 1:peak_col + 2] = -9999
+    background_values = correlation_map_masked[correlation_map_masked != -9999]
+    background_mean = np.mean(background_values)
+    background_std = np.std(background_values)
+
+    # Step 5: Calculate reliability
+    reliability = 100 - ((background_mean + 2 * background_std) / peak_strength * 100)
+    reliability = max(0, min(100, reliability))  # Clamp between 0 and 100
+
+    return  reliability
 
 def read_resolutions(tiff_path):
     """
@@ -124,6 +269,14 @@ def find_best_starting_point(tiff1_path, tiff2_path):
         row_center = combined_mask.shape[0] // 2
         col_center = combined_mask.shape[1] // 2
 
+        # plot the combined mask on top of the target image band 1
+        # plt.imshow(src1.read(1, window=overlap_window), cmap='gray')
+        # # view of the overlap region for src2
+        # plt.imshow(src2.read(1, window=overlap_window), cmap='gray', alpha=0.5)
+        # # plt.imshow(combined_mask, cmap='gray', alpha=0.5)
+        # plt.title("Combined Mask (True = NoData, False = Valid)")
+        # plt.show()
+
         if not combined_mask[row_center, col_center]:
             return (row_center, col_center)  # Center point is valid
 
@@ -140,6 +293,22 @@ def find_best_starting_point(tiff1_path, tiff2_path):
         # Return the closest valid point
         best_point = tuple(valid_points[closest_index])
         return best_point
+
+def get_combined_mask(tiff1_path, tiff2_path):
+    with rasterio.open(tiff1_path) as src1, rasterio.open(tiff2_path) as src2:
+        # Define overlapping window between the two TIFFs
+        overlap_window = src1.window(*src1.bounds).intersection(src2.window(*src2.bounds))
+        # Convert to row/col coordinates for consistent box size
+        row_start, col_start, row_end, col_end = map(int, overlap_window.flatten())
+
+        # Mask out the valid data regions for both TIFFs
+        valid_data_mask1 = src1.read(1, masked=True).mask[row_start:row_end, col_start:col_end]
+        valid_data_mask2 = src2.read(1, masked=True).mask[row_start:row_end, col_start:col_end]
+
+        # Combine masks to find invalid data regions
+        combined_mask = valid_data_mask1 | valid_data_mask2 
+
+        return combined_mask
 
 def get_valid_window_with_fallback(tiff1_path, tiff2_path, start_point=None, 
                                    initial_window_size=None, min_window_size=(16, 16)):
@@ -166,19 +335,10 @@ def get_valid_window_with_fallback(tiff1_path, tiff2_path, start_point=None,
         tuple: Bounds of the valid window as (row_start, row_end, col_start, col_end).
                If no valid window is found, raises a ValueError.
     """
+    combined_mask = get_combined_mask(tiff1_path, tiff2_path)
+
+
     with rasterio.open(tiff1_path) as src1, rasterio.open(tiff2_path) as src2:
-        # Define overlapping window between the two TIFFs
-        overlap_window = src1.window(*src1.bounds).intersection(src2.window(*src2.bounds))
-        # Convert to row/col coordinates for consistent box size
-        row_start, col_start, row_end, col_end = map(int, overlap_window.flatten())
-
-        # Mask out the valid data regions for both TIFFs
-        valid_data_mask1 = src1.read(1, masked=True).mask[row_start:row_end, col_start:col_end]
-        valid_data_mask2 = src2.read(1, masked=True).mask[row_start:row_end, col_start:col_end]
-
-        # Combine masks to find invalid data regions
-        combined_mask = valid_data_mask1 | valid_data_mask2  
-
         # Determine the starting point
         if start_point is None:
             row_center = (combined_mask.shape[0]) // 2
@@ -218,6 +378,11 @@ def get_valid_window_with_fallback(tiff1_path, tiff2_path, start_point=None,
                 return False, None
             
             # Check if the window contains any NoData pixels
+            # plot the combined mask
+            # plt.imshow(combined_mask[row_start:row_end, col_start:col_end].astype(int), cmap='gray')
+            # plt.colorbar()
+            # plt.title("Combined Mask (True = NoData, False = Valid)")
+            # plt.show()
             if not combined_mask[row_start:row_end, col_start:col_end].any():
                 # return True, (row_start, row_end, col_start, col_end)
                 return True, (row_start,col_start,row_end,col_end)
@@ -254,18 +419,19 @@ def get_max_valid_window_size_and_bounds(tiff1_path, tiff2_path):
         tuple: The pixel bounds of the largest valid window as 
                (row_start, row_end, col_start, col_end).
     """
+    combined_mask = get_combined_mask(tiff1_path, tiff2_path)
     with rasterio.open(tiff1_path) as src1, rasterio.open(tiff2_path) as src2:
-        # Define overlapping window between the two TIFFs
-        overlap_window = src1.window(*src1.bounds).intersection(src2.window(*src2.bounds))
-        # Convert to row/col coordinates for consistent box size
-        row_start, col_start, row_end, col_end = map(int, overlap_window.flatten())
+        # # Define overlapping window between the two TIFFs
+        # overlap_window = src1.window(*src1.bounds).intersection(src2.window(*src2.bounds))
+        # # Convert to row/col coordinates for consistent box size
+        # row_start, col_start, row_end, col_end = map(int, overlap_window.flatten())
 
-        # Mask out the valid data regions for both TIFFs
-        valid_data_mask1 = src1.read(1, masked=True).mask[row_start:row_end, col_start:col_end]
-        valid_data_mask2 = src2.read(1, masked=True).mask[row_start:row_end, col_start:col_end]
+        # # Mask out the valid data regions for both TIFFs
+        # valid_data_mask1 = src1.read(1, masked=True).mask[row_start:row_end, col_start:col_end]
+        # valid_data_mask2 = src2.read(1, masked=True).mask[row_start:row_end, col_start:col_end]
 
-        # Combine masks to find invalid data regions
-        combined_mask = valid_data_mask1 | valid_data_mask2  
+        # # Combine masks to find invalid data regions
+        # combined_mask = valid_data_mask1 | valid_data_mask2  
 
         max_window_size = 0
         best_bounds = None, None, None, None
@@ -504,6 +670,24 @@ def find_shift(template: np.ndarray, target: np.ndarray) -> tuple:
     return shift, error, diffphase
 
 class CoregisterInterface:
+    DEFAULT_COREG_INFO ={
+        'shift_x': 0.0,
+        'shift_y': 0.0,
+        'shift_x_meters': 0.0,
+        'shift_y_meters': 0.0,
+        'initial_shift_x': 0.0,
+        'initial_shift_y': 0.0,
+        'error': 0.0,
+        'shift_reliability': 0.0,
+        'qc': 0.0,
+        'description': '',
+        'success': 'False',
+        'original_ssim': 0.0,
+        'coregistered_ssim': 0.0,
+        'change_ssim': 0.0,
+        'window_size': (256, 256), # default window size
+    }
+
     def __init__(self, 
              target_path: str, 
              template_path: str, 
@@ -515,7 +699,8 @@ class CoregisterInterface:
              target_band: int = 1, 
              template_band: int = 1, 
              matching_window_strategy: str = 'max_overlap',
-             min_window_size: tuple = (64, 64),):
+             min_window_size: tuple = (64, 64),
+             ):
         """
         Initialize the Coregistration class.
 
@@ -567,7 +752,7 @@ class CoregisterInterface:
         # 2. use_predetermined_window_size: uses the window size provided in the window_size parameter. Starts from the corner of the image until it finds a matching window of the specified size
 
         # Properties with default values
-        self.bounds: tuple = None
+        self.bounds = (None, None, None, None)
 
         # track files that need to be removed after coregistration is complete
         self.updated_dtype_file = ""
@@ -600,7 +785,7 @@ class CoregisterInterface:
 
         # Initialize any additional parameters as needed
         self._initialize_resolutions()
-        self.set_scaling_factor()
+        self.set_current_resolution()
 
     
         # make both the target and template the same data type (needed for histogram matching) (changes them to be the largest data type possible to avoid loss of information)
@@ -615,7 +800,7 @@ class CoregisterInterface:
         if self.template_reprojected: # if this runs then the template was reprojected
             self.template_path = reproject_to_image(self.target_path, self.template_path, 'reprojected_template.tif')
             self.reprojected_file = self.template_path
-        else: # this is genrally what will run
+        else: # this is genrally what will run and it will reproject the target to match the template
             reprojected_path = output_path.replace('.tif','_reprojected.tif')
             self.target_path = reproject_to_image(self.template_path, self.target_path, reprojected_path)
             self.reprojected_file = reprojected_path  # this file will be deleted after coregistration is complete
@@ -636,12 +821,18 @@ class CoregisterInterface:
             self.clear_temp_files()
             raise ValueError(f"The overlapping region was smaller than 16 pixels. Coregistraion is not possible. ")
             
-        
+        initial_window_size = self.window_size
         if self.matching_window_strategy == 'max_center_size': # finds the largest window starting with the initital window size at the center of the overlap
             try:
                 best_point = find_best_starting_point(self.target_path, self.template_path)
                 # the bounds are (row_start,col_start,row_end,col_end)
                 window_size, best_bounds = get_valid_window_with_fallback(self.target_path, self.template_path, start_point=best_point,initial_window_size=self.window_size,min_window_size=self.min_window_size)
+                # if this method fails implement the VERY SLOW but reliable fallback method which has a cache in case its seen it before
+                if self.bounds == (None, None, None, None):
+                    window_size, best_bounds = find_best_window_in_combined_mask(self.target_path, self.template_path, self.min_window_size[0],self.min_window_size[1], self.window_size[0],self.window_size[1], )
+
+                
+                
                 if verbose:
                     print(f"best_point: {best_point}, window_size: {window_size}, best_bounds: {best_bounds}")
             except Exception as e:
@@ -659,7 +850,7 @@ class CoregisterInterface:
         self.coreg_info.update({'window_size': self.window_size})
 
         if self.bounds == (None, None, None, None):
-            self.coreg_info.update({'description': 'no valid matching window found of size '+str(self.window_size)+f'of at least {self.min_window_size} pixels'})
+            self.coreg_info.update({'description': "No valid matching window was found within the range of {self.min_window_size} to " + str(initial_window_size) + " pixels."})
             self.coreg_info.update({'success': 'False'})
             self.clear_temp_files()
         else:
@@ -667,6 +858,32 @@ class CoregisterInterface:
             if verbose:
                 self.write_matching_window_tiffs()
                 self.save_matching_region_figure()
+
+    @property
+    def default_coreg_info(self):
+        """
+        Provides the default coregistration information.
+        
+        Returns:
+            dict: A dictionary with default coregistration information values.
+        """
+        return {
+            'shift_x': 0.0,
+            'shift_y': 0.0,
+            'shift_x_meters': 0.0,
+            'shift_y_meters': 0.0,
+            'initial_shift_x': 0.0,
+            'initial_shift_y': 0.0,
+            'error': 0.0,
+            'shift_reliability': 0.0,
+            'qc': 0,
+            'description': '',
+            'success': 'False',
+            'original_ssim': 0.0,
+            'coregistered_ssim': 0.0,
+            'change_ssim': 0.0,
+            'window_size': (256, 256), # default window size
+        }
 
     def clear_temp_files(self):
         if self.reprojected_file:
@@ -715,7 +932,6 @@ class CoregisterInterface:
                 # If the data types are the same, no changes are needed
                 return tiff1_path, tiff2_path
 
-            print(f"Updating data type of {updated_tiff_path}")
             # Update metadata to match the larger data type
             updated_meta = smaller_tiff.meta.copy()
             updated_meta.update(dtype=larger_dtype)
@@ -731,10 +947,10 @@ class CoregisterInterface:
 
         # Return the paths in the original order
         if dtype1_size > dtype2_size:
-            print(f"tif1 > tif2: {updated_tiff_path}")
+            # print(f"tif1 > tif2: {updated_tiff_path}")
             return unchanged_tiff_path, updated_tiff_path
         else:
-            print(f"tif1 < tif2: {updated_tiff_path}")
+            # print(f"tif1 <= tif2: {updated_tiff_path}")
             return updated_tiff_path, unchanged_tiff_path
 
     def write_matching_window_tiffs(self):
@@ -798,22 +1014,9 @@ class CoregisterInterface:
             - 'window_size' (int): Window size used for coregistration.
         """
         if self.coreg_info == {}:
-            self.coreg_info = {
-                'shift_x': 0,
-                'shift_y': 0,
-                'shift_x_meters': 0,
-                'shift_y_meters': 0,
-                'initial_shift_x':0,
-                'initial_shift_y': 0,
-                'error': 0,
-                'qc': 0,
-                'description':'',
-                'success': 'False',
-                'original_ssim': 0,
-                'coregistered_ssim': 0,
-                "change_ssim": 0,
-                "window_size": self.window_size,
-            }
+            self.coreg_info = CoregisterInterface.DEFAULT_COREG_INFO.copy()
+            self.coreg_info.update({'window': self.window_size})
+
 
         # make the shifts json serializeable
         self.coreg_info.update({'shift_x': float(self.coreg_info['shift_x'])})
@@ -821,6 +1024,7 @@ class CoregisterInterface:
         self.coreg_info.update({'initial_shift_x': float(self.coreg_info['initial_shift_x'])})
         self.coreg_info.update({'initial_shift_y': float(self.coreg_info['initial_shift_y'])})
         self.coreg_info.update({'error': float(self.coreg_info['error'])})
+        self.coreg_info.update({'shift_reliability': float(self.coreg_info['shift_reliability'])})
         self.coreg_info.update({'original_ssim': float(self.coreg_info['original_ssim'])})
         self.coreg_info.update({'coregistered_ssim': float(self.coreg_info['coregistered_ssim'])})
         self.coreg_info.update({'change_ssim': float(self.coreg_info['change_ssim'])})
@@ -867,7 +1071,7 @@ class CoregisterInterface:
         self.original_target_resolution = self.target_resolution   # this is needed later to scale the shifts in meters back to pixels
         self.template_resolution = self.get_resolution(self.template_path)
 
-    def set_scaling_factor(self):
+    def set_current_resolution(self):
         if self.target_resolution is None or self.template_resolution is None:
             self._initialize_resolutions()
         
@@ -904,7 +1108,8 @@ class CoregisterInterface:
         initial_shift, error, diffphase = shift, error, diffphase = phase_cross_correlation(
             template_window, target_window, upsample_factor=100,
         )
-
+        # estimate shift reliability
+        shift_reliability = calculate_shift_reliability(template_window, target_window)
         # convert the shift to meters ( shift is in Y X format in pixels)
         shift_meters = (shift[0]*self.current_resolution[1], shift[1]*self.current_resolution[0])
 
@@ -928,6 +1133,7 @@ class CoregisterInterface:
                 'current_resolution': self.current_resolution,
                 'target_resolution': self.original_target_resolution,
                 'error': error,
+                'shift_reliability': shift_reliability, 
                 'qc': shift_qc,
                 'description':'successfully coregistered' if shift_qc else 'failed : shift exceeded max or min translation',
         })
@@ -1042,6 +1248,60 @@ class CoregisterInterface:
         
         self.clear_temp_files()
         #@todo make sure to remove the reprojected template and target images including the file that had its dtype changed
+
+def coregister_single(target_path, template_path, output_path, **kwargs):
+    """
+    Coregisters a single image with a template image.
+
+    Parameters:
+    - target_path (str): Path to the target image to be coregistered.
+    - template_path (str): Path to the template image used for coregistration.
+    - output_path (str): Path where the coregistered image will be saved.
+    
+    Keyword Arguments (kwargs):
+    - WINDOW_SIZE (int): Size of the window used for matching.
+    - settings (dict): A dictionary containing settings such as 'max_translation' and 'min_translation'.
+    - matching_window_strategy (str): Strategy for window matching (e.g., 'max_overlap' or 'max_center_size').
+    - verbose (bool): If True, prints detailed logs of the coregistration process.
+    - Any other settings can also be passed and will be processed dynamically.
+
+    Returns:
+    None
+    """
+    # make sure the target and template path are not the same
+    if target_path == template_path:
+        print(f"Skipping {os.path.basename(target_path)} because the target and template paths are the same.")
+        new_result = {
+            os.path.basename(target_path): {CoregisterInterface.DEFAULT_COREG_INFO}
+        }
+        return new_result
+
+    # Extract specific parameters with defaults
+    window_size = kwargs.get('window_size', 100)  # Default value as an example
+    settings = kwargs.get('settings', {})
+    matching_window_strategy = kwargs.get('matching_window_strategy', 'max_center_size')
+    verbose = kwargs.get('verbose', False)
+    try:
+        coreg = CoregisterInterface(target_path=target_path, template_path=template_path, output_path=output_path,window_size=window_size,settings=settings, verbose=verbose,matching_window_strategy=matching_window_strategy)
+        if 'no valid matching window found' in coreg.get_coreg_info()['description'] or coreg.bounds == (None, None, None, None):
+            print(f"Skipping {os.path.basename(target_path)} due to no valid matching window found.")
+            new_result = {
+                os.path.basename(target_path): coreg.get_coreg_info()
+            }
+            return new_result
+        coreg.coregister()
+    except Exception as e:
+        import traceback
+        print(f"Error: {e}")
+        traceback.print_exc()
+        new_result = {
+            os.path.basename(target_path): coreg.get_coreg_info()
+        }
+    else:
+        new_result = {
+            os.path.basename(target_path): coreg.get_coreg_info()
+        }
+    return new_result
 
 # Dev notes: See coregister_class_tester.py for a test of this class
 

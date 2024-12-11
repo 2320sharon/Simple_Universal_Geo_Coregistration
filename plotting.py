@@ -17,7 +17,7 @@ from rasterio.warp import reproject, Resampling  # Import directly from rasterio
 from concurrent.futures import ThreadPoolExecutor
 
 import matplotlib
-matplotlib.use('Agg')  # Use Agg backend for non-GUI rendering
+# matplotlib.use('Agg')  # Use Agg backend for non-GUI rendering
 import matplotlib.pyplot as plt
 
 
