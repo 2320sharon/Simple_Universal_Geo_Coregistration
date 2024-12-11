@@ -6,15 +6,8 @@ import json
 import rasterio
 import glob
 
-
-
-from skimage.metrics import structural_similarity as ssim
-from skimage import exposure
 import tqdm
-from skimage.registration import phase_cross_correlation
 import threading
-from scipy.ndimage import shift as scipy_shift
-from rasterio.warp import reproject, Resampling  # Import directly from rasterio.warp
 from concurrent.futures import ThreadPoolExecutor
 
 import matplotlib
@@ -33,9 +26,13 @@ import plotting
 WINDOW_SIZE=(256,256)
 window_size_str= f"{WINDOW_SIZE[0]}x{WINDOW_SIZE[1]}"
 
-session_dir = r'C:\development\doodleverse\coastseg\CoastSeg\data\ID_1_datetime11-04-24__04_30_52'
-template_path = r"C:\development\doodleverse\coastseg\CoastSeg\data\ID_1_datetime11-04-24__04_30_52\L9\ms\2023-06-30-22-01-55_L9_ID_1_datetime11-04-24__04_30_52_ms.tif"
+session_dir = r'C:\development\doodleverse\coastseg\CoastSeg\data\ID_1_datetime11-04-24__04_30_52_original'
+template_path = r"C:\development\doodleverse\coastseg\CoastSeg\data\ID_1_datetime11-04-24__04_30_52_original\L9\ms\2023-06-30-22-01-55_L9_ID_1_datetime11-04-24__04_30_52_ms.tif"
 
+# Test if S2 can be registered to S2
+# Test if L9 can be registered to L9
+# session_dir = r'C:\development\doodleverse\coastseg\CoastSeg\data\ID_1_datetime11-04-24__04_30_52_original_mess_with'
+# template_path = r"C:\development\doodleverse\coastseg\CoastSeg\data\ID_1_datetime11-04-24__04_30_52_original_mess_with\S2\ms\2023-07-01-22-28-09_S2_ID_1_datetime11-04-24__04_30_52_ms.tif"
 
 # CoastSeg Session
 # 1. read config.json file
@@ -45,7 +42,9 @@ template_path = r"C:\development\doodleverse\coastseg\CoastSeg\data\ID_1_datetim
 
 # get the dirs of satellites
 satellites = ['S2','L7', 'L8','L9']
-satellites = ['S2']
+# satellites = ['S2']
+# satellites = ['L9']
+satellites = ['L8']
 
 # from os import walk,scandir
 # def fast_scandir(dirname):
@@ -74,8 +73,9 @@ for file in os.listdir(session_dir):
         # read through ms directory and get base names
         ms_dir = os.path.join(session_dir,file,'ms')
         mask_dir = os.path.join(session_dir,file,'mask')
+        print(f"ms_dir: {ms_dir}")
         # pan_dir = os.path.join(session_dir,file,'pan')
-        swir_dir = os.path.join(session_dir,file,'swir')
+        # swir_dir = os.path.join(session_dir,file,'swir')
 
         # get the base names of the files in the ms directory
         basenames = [os.path.basename(f).split('_')[0] for f in glob.glob(os.path.join(ms_dir, '*.tif'))]
@@ -91,6 +91,7 @@ for file in os.listdir(session_dir):
         # matching_window_strategy='max_overlap' # this strategy does not work...
         matching_window_strategy='max_center_size'
         coregistered_directory = os.path.join(ms_dir,matching_window_strategy+'_no_histogram_match'+f"_window_size_{window_size_str}")
+        print(f"coregistered_directory: {coregistered_directory}")
         os.makedirs(coregistered_directory, exist_ok=True)
 
         # Start by looping through all the files in a directory
