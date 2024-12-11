@@ -1105,13 +1105,15 @@ class CoregisterInterface:
         # 2. apply histogram matching
         target_window = exposure.match_histograms(target_window, template_window)
         # 3. Find the shift between the template and target images
-        initial_shift, error, diffphase = shift, error, diffphase = phase_cross_correlation(
+        initial_shift, error, diffphase = phase_cross_correlation(
             template_window, target_window, upsample_factor=100,
         )
+        # turn the initial shift to float so that it can be saved to file
+        initial_shift = float(initial_shift[0]), float(initial_shift[1])
         # estimate shift reliability
         shift_reliability = calculate_shift_reliability(template_window, target_window)
         # convert the shift to meters ( shift is in Y X format in pixels)
-        shift_meters = (shift[0]*self.current_resolution[1], shift[1]*self.current_resolution[0])
+        shift_meters = (initial_shift[0]*self.current_resolution[1], initial_shift[1]*self.current_resolution[0])
 
         # 4. This is where quality control would go @ todo
         shift_qc = self.quality_control_shift(shift_meters)
