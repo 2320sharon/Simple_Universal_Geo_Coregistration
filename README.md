@@ -19,11 +19,19 @@ A simple coregistration tool that uses phase cross correlation to determine the 
 3. Run a post processing script to filter out any outlier shifts (function coming soon)
 
 ## Settings
-- Window Size:
--   1. 
--   2. 
-- min_window_size : Smallest window size
--
+- Window Size: Max size of the window to determine coregistration within defaults to 256,256
+-   1.  `max_center_size` : Finds the largest possible window at the center of the overlap.
+-   2. `matching_window_strategy`; Finds the window of window size at the first avaiable location by sliding a window across the overlap region.
+- min_window_size : Smallest window size default to (16,16)
+- <todo explain rest of settings>
+
+## How to Use with CoastSeg
+`coregister_class_coastseg_zoo_implementation.py`
+1. Select a session from the `/data` folder within CoastSeg
+2. Select the ROI ID for the ROI you wish to register
+3. Select a template image either a landsat 8 or landsat 9
+4. Adjust the settings
+<Make an example>
 
 # Outlier Filtering
 ![plot_outlier_shifts](https://github.com/user-attachments/assets/69f21601-4c22-4b75-ab98-bddc19e1b614)
