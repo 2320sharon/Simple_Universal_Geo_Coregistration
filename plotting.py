@@ -1,29 +1,14 @@
-import rasterio
 import numpy as np
 import os
-import math
-import json
-import rasterio
 import numpy as np
 import matplotlib.patches as mpatches
-
-from skimage.metrics import structural_similarity as ssim
-from skimage import exposure
-from tqdm import tqdm
-from skimage.registration import phase_cross_correlation
-import threading
-from scipy.ndimage import shift as scipy_shift
-from rasterio.warp import reproject, Resampling  # Import directly from rasterio.warp
-from concurrent.futures import ThreadPoolExecutor
 
 import matplotlib
 # matplotlib.use('Agg')  # Use Agg backend for non-GUI rendering
 import matplotlib.pyplot as plt
 
 
-def plot_ssim_scores_dev(result_json_path, output_dir):
-    with open(result_json_path, 'r') as json_file:
-        results = json.load(json_file)
+def plot_ssim_scores_dev(results, output_dir):
 
          # Initialize counters for each category
         counts = {
@@ -75,9 +60,7 @@ def plot_ssim_scores_dev(result_json_path, output_dir):
 
 
 
-def plot_delta_ssim_scores(result_json_path, output_dir):
-    with open(result_json_path, 'r') as json_file:
-        results = json.load(json_file)
+def plot_delta_ssim_scores(results, output_dir):
 
          # Initialize counters for each category
         counts = {
@@ -118,24 +101,24 @@ def plot_delta_ssim_scores(result_json_path, output_dir):
         print(f"Plot saved to {os.path.join(output_dir, 'delta_ssim_scatter_plot.png')}")
 
 
-def plot_ssim_scores(result_json_path, output_dir):
-    with open(result_json_path, 'r') as json_file:
-        results = json.load(json_file)
+def plot_ssim_scores(results, output_dir):
 
-         # Initialize counters for each category
-        counts = {
-            'no_valid_window': 0,
-            'shift_exceeded': 0,
-            'no_shift': 0,
-            'success': 0,
-            'failed': 0
-        }
-
-        # make a scatter plot of coregistered ssim vs original ssim scores and color those whose 'success' is True green and those whose 'success' is False red
-        fig, ax = plt.subplots(figsize=(10, 6))  # Increase figure size if necessary
-        for key, value in results.items():
-            if key == 'file_inputs' or 'settings' in key:
-                continue
+     # Initialize counters for each category
+    counts = {
+        'no_valid_window': 0,
+        'shift_exceeded': 0,
+        'no_shift': 0,
+        'success': 0,
+        'failed': 0
+    }
+    # make a scatter plot of coregistered ssim vs original ssim scores and color those whose 'success' is True green and those whose 'success' is False red
+    fig, ax = plt.subplots(figsize=(10, 6))  # Increase figure size if necessary
+    for key in results.keys():
+        if key == 'file_inputs' or 'settings' in key:
+            continue
+        print(f"key: {key}")
+        print(f"results[key]: {results[key]}")
+        for key,value in results[key].items():
             if "shift exceeded" in value['description']:
                 ax.scatter(value['original_ssim'], value['coregistered_ssim'], color='orange')  # bad shift
                 counts['shift_exceeded'] += 1
@@ -145,29 +128,22 @@ def plot_ssim_scores(result_json_path, output_dir):
             else:
                 ax.scatter(value['original_ssim'], value['coregistered_ssim'], color='red')  # the shift made the coregistered image worse
                 counts['failed'] += 1
-
-        # Create custom legend with counts
-        orange_patch = mpatches.Patch(color='orange', label=f'Shift exceeded ({counts["shift_exceeded"]})')
-        green_patch = mpatches.Patch(color='green', label=f'Success ({counts["success"]})')
-        red_patch = mpatches.Patch(color='red', label=f'Shift made it worse ({counts["failed"]})')
-
-        ax.legend(handles=[ orange_patch,  green_patch, red_patch], loc='center left', bbox_to_anchor=(1, 0.5))
-
-        ax.set_xlabel('Original SSIM')
-        ax.set_ylabel('Coregistered SSIM')
-        ax.set_title('Original SSIM vs Coregistered SSIM')
-
-        # plt.tight_layout(rect=[0, 0, 0.85, 1])  # Adjust the layout to make space for the legend
-        plt.tight_layout()  # Adjust the layout to make space for the legend
-        plt.savefig(os.path.join(output_dir, 'ssim_scatter_plot.png'))
-        print(f"Plot saved to {os.path.join(output_dir, 'ssim_scatter_plot.png')}")
+    # Create custom legend with counts
+    orange_patch = mpatches.Patch(color='orange', label=f'Shift exceeded ({counts["shift_exceeded"]})')
+    green_patch = mpatches.Patch(color='green', label=f'Success ({counts["success"]})')
+    red_patch = mpatches.Patch(color='red', label=f'Shift made it worse ({counts["failed"]})')
+    ax.legend(handles=[ orange_patch,  green_patch, red_patch], loc='center left', bbox_to_anchor=(1, 0.5))
+    ax.set_xlabel('Original SSIM')
+    ax.set_ylabel('Coregistered SSIM')
+    ax.set_title('Original SSIM vs Coregistered SSIM')
+    # plt.tight_layout(rect=[0, 0, 0.85, 1])  # Adjust the layout to make space for the legend
+    plt.tight_layout()  # Adjust the layout to make space for the legend
+    plt.savefig(os.path.join(output_dir, 'ssim_scatter_plot.png'))
+    print(f"Plot saved to {os.path.join(output_dir, 'ssim_scatter_plot.png')}")
 
 
 
-def plot_x_y_delta_ssim_scatter(result_json_path, output_dir):
-    with open(result_json_path, 'r') as json_file:
-        results = json.load(json_file)
-
+def plot_x_y_delta_ssim_scatter(results, output_dir):
     # Initialize counters for each category
     counts = {
         'no_valid_window': 0,
@@ -269,9 +245,7 @@ def plot_x_y_delta_ssim_scatter(result_json_path, output_dir):
 #         print(f"Plot saved to {os.path.join(output_dir, 'x_y_delta_ssim_scatter_plot.png')}")
 
 
-def plot_shift_histogram(result_json_path, output_dir):
-    with open(result_json_path, 'r') as json_file:
-        results = json.load(json_file)
+def plot_shift_histogram(results, output_dir):
 
     shifts_x = []
     shifts_y = []
@@ -299,9 +273,7 @@ def plot_shift_histogram(result_json_path, output_dir):
     print(f"Histogram saved to {os.path.join(output_dir, 'shift_histogram.png')}")
 
 
-def plot_shifts_by_month(result_json_path, output_dir):
-    with open(result_json_path, 'r') as json_file:
-        results = json.load(json_file)
+def plot_shifts_by_month(results, output_dir):
 
     shifts_by_month = {}
 
@@ -338,9 +310,7 @@ def plot_shifts_by_month(result_json_path, output_dir):
     print(f"Plot saved to {os.path.join(output_dir, 'shifts_by_month.png')}")
 
 
-def plot_coregistration_success_by_month(result_json_path, output_dir):
-    with open(result_json_path, 'r') as json_file:
-        results = json.load(json_file)
+def plot_coregistration_success_by_month(results, output_dir):
 
     success_by_month = {}
     failed_by_month = {}
@@ -379,26 +349,23 @@ def plot_coregistration_success_by_month(result_json_path, output_dir):
     print(f"Plot saved to {os.path.join(output_dir, 'coregistration_success_by_month.png')}")
 
 
-def create_readme(coregistered_dir, result_json_path):
+def create_readme(coregistered_dir, results):
     # create a readme.txt file at the output_dir
     with open(os.path.join(coregistered_dir, 'readme.txt'), 'w') as f:
         # read the json data and count the number of successful coregistrations
-        with open(result_json_path,'r') as json_file:
-            results = json.load(json_file)
-            successful_coregistrations = 0
-            qc_failed = 0
-            improvements = []
-            for key, value in results.items():
-                if 'settings' in key:
-                    continue
-                if value['success'] == 'True':
-                    successful_coregistrations += 1
-                    # create a list of the change in ssim score for each successful coregistration
-                    # then create an average improvement in ssim score
-                    improvements.append(value['change_ssim'])
-                if value['qc'] == 0:
-                    qc_failed += 1
-
+        successful_coregistrations = 0
+        qc_failed = 0
+        improvements = []
+        for key, value in results.items():
+            if 'settings' in key:
+                continue
+            if value['success'] == 'True':
+                successful_coregistrations += 1
+                # create a list of the change in ssim score for each successful coregistration
+                # then create an average improvement in ssim score
+                improvements.append(value['change_ssim'])
+            if value['qc'] == 0:
+                qc_failed += 1
             if len(improvements) == 0:
                 average_improvement = 0
             elif len(improvements) == 1:

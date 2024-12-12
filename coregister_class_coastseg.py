@@ -69,6 +69,36 @@ def save_coregistered_results(results, satellite, WINDOW_SIZE, template_path, re
 
     return results_ordered
 
+def coregister_files(tif_files:list, template_path:str, coregistered_directory:str, satellite:str, WINDOW_SIZE:tuple, settings:dict, matching_window_strategy:str):
+    results = []
+    for target_path in tqdm.tqdm(tif_files[:2],desc=f"Coregistering files for {satellite}"):
+        output_filename = os.path.basename(target_path)
+        output_path = os.path.join(coregistered_directory, output_filename)
+        try:
+            coreg = CoregisterInterface(target_path=target_path, template_path=template_path, output_path=output_path,window_size=WINDOW_SIZE,settings=settings, verbose=False,matching_window_strategy=matching_window_strategy)
+            if 'no valid matching window found' in coreg.get_coreg_info()['description']:
+                print(f"Skipping {os.path.basename(target_path)} due to no valid matching window found.")
+                new_result = {
+                    os.path.basename(target_path): coreg.get_coreg_info()
+                }
+                results.append(new_result)
+                continue
+            coreg.coregister()
+            # remake jpg 
+        except Exception as e:
+            import traceback
+            print(f"Error: {e}")
+            traceback.print_exc()
+            new_result = {
+                os.path.basename(target_path): coreg.get_coreg_info()
+            }
+        else:
+            new_result = {
+                os.path.basename(target_path): coreg.get_coreg_info()
+            }
+        results.append(new_result)
+    return results
+
 # Settings
 WINDOW_SIZE=(256,256)
 window_size_str= f"{WINDOW_SIZE[0]}x{WINDOW_SIZE[1]}"
@@ -84,14 +114,16 @@ settings = {
 }
 matching_window_strategy='max_center_size'
 
-results = []
+results = {}
+coregistered_path = os.path.join(session_dir,matching_window_strategy+'_no_histogram_match'+f"_window_size_{window_size_str}")
+os.makedirs(coregistered_path , exist_ok=True)
 
 # list the directories in the session directory
 # 2. loop through the directories
 for folder in os.listdir(session_dir):
     if os.path.isdir(os.path.join(session_dir,folder)) and folder in satellites:
+        # 3. get the satellite name
         satellite = folder
-
         # read through ms directory and get base names
         ms_dir = os.path.join(session_dir,satellite,'ms')
         # get the base names of the files in the ms directory
@@ -100,61 +132,39 @@ for folder in os.listdir(session_dir):
         # coregister each ms file and save to a new directory called coregistered
         tif_files = glob.glob(os.path.join(ms_dir, '*.tif'))
 
-        coregistered_directory = os.path.join(ms_dir,matching_window_strategy+'_no_histogram_match'+f"_window_size_{window_size_str}")
+        coregistered_directory = os.path.join(coregistered_path, satellite)
         os.makedirs(coregistered_directory, exist_ok=True)
 
         # Start by looping through all the files in a directory
         if len(tif_files) < 1:
             print("No TIFF files found in the directory.")
             raise SystemExit
-        for target_path in tqdm.tqdm(tif_files):
-            output_filename = os.path.basename(target_path)
-            output_path = os.path.join(coregistered_directory, output_filename)
-            try:
-                coreg = CoregisterInterface(target_path=target_path, template_path=template_path, output_path=output_path,window_size=WINDOW_SIZE,settings=settings, verbose=False,matching_window_strategy=matching_window_strategy)
-                if 'no valid matching window found' in coreg.get_coreg_info()['description']:
-                    print(f"Skipping {os.path.basename(target_path)} due to no valid matching window found.")
-                    new_result = {
-                        os.path.basename(target_path): coreg.get_coreg_info()
-                    }
-                    results.append(new_result)
-                    continue
-                coreg.coregister()
-                # remake jpg 
-            except Exception as e:
-                import traceback
-                print(f"Error: {e}")
-                traceback.print_exc()
-                new_result = {
-                    os.path.basename(target_path): coreg.get_coreg_info()
-                }
-            else:
-                new_result = {
-                    os.path.basename(target_path): coreg.get_coreg_info()
-                }
-            results.append(new_result)
+        results[satellite] = coregister_files(tif_files, template_path, coregistered_directory, satellite, WINDOW_SIZE, settings, matching_window_strategy)
+        # Save the results to the same coregistered directory
+        if len(results[satellite]) > 1:
+            results[satellite] = plotting.merge_list_of_dicts(results[satellite])
+        
 
-    print(f"len(results): {len(results)}")
-    # Save the results to the same coregistered directory
-    if len(results) > 1:
-        results = plotting.merge_list_of_dicts(results)
-
-        settings.update({'window_size': WINDOW_SIZE, 'template_path': template_path, })
-        results['settings'] = settings
+settings.update({'window_size': WINDOW_SIZE, 'template_path': template_path, })
+results['settings'] = settings
 
 # 5. set the output path to save the transformation results
-result_json_path = os.path.join(coregistered_directory, 'transformation_results.json')
+result_json_path = os.path.join(coregistered_path, 'transformation_results.json')
 with open(result_json_path, 'w') as json_file:
     json.dump(results, json_file, indent=4, cls=NumpyEncoder)
 # save_coregistered_results(results, satellite, WINDOW_SIZE, template_path, result_json_path, settings)
+print(f"Saved results to: {result_json_path}")
+with open(result_json_path, 'r') as json_file:
+    results = json.load(json_file)
 
-# 6. plot the results
-# @todo this doesn't work if multiple satellites are used. Please update the plotting functions to handle multiple satellites.
-# plotting.create_readme(coregistered_directory, result_json_path)
+# print(f"results: {results}")
+# # 6. plot the results
+# # @todo this doesn't work if multiple satellites are used. Please update the plotting functions to handle multiple satellites.
+# plotting.create_readme(coregistered_directory, results)
 
-# plotting.plot_ssim_scores(result_json_path, coregistered_directory)
-# plotting.plot_ssim_scores_dev(result_json_path, coregistered_directory)
-# plotting.plot_shifts_by_month(result_json_path, coregistered_directory)
-# plotting.plot_shift_histogram(result_json_path, coregistered_directory)
-# plotting.plot_delta_ssim_scores(result_json_path, coregistered_directory)
-# plotting.plot_coregistration_success_by_month(result_json_path, coregistered_directory)
+plotting.plot_ssim_scores(results, coregistered_directory)
+# plotting.plot_ssim_scores_dev(results, coregistered_directory)
+# plotting.plot_shifts_by_month(results, coregistered_directory)
+# plotting.plot_shift_histogram(results, coregistered_directory)
+# plotting.plot_delta_ssim_scores(results, coregistered_directory)
+# plotting.plot_coregistration_success_by_month(results, coregistered_directory)
