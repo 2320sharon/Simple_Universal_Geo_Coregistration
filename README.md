@@ -31,8 +31,9 @@ A simple coregistration tool that uses phase cross correlation to determine the 
 - min_window_size : Smallest window size that can be used to perform coregistration default to (64,64)
 - gaussian_weights : Whether to use Gaussian weights for SSIM
    - This puts more weight on the features at the center of the image
-- target_band : 
-- template_band: 
+- target_band : The target's band number that should be used to coregister. Default is 1
+    -   Make sure the target band and template band point to the same type of band. For example target band 1 is red and template band 3 is red.
+- template_band: The template's band number that should be used to coregister. Default is 1
 - settings:
   -   1. max_translation (float): Maximum translation (in meters) allowed for coregistration. Defaults to 1000m.
   -   2. min_translation (float): Minimum translation (in meters) allowed for coregistration. Defaults to -1000m.
