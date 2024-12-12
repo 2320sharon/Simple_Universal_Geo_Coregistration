@@ -31,7 +31,7 @@ A simple coregistration tool that uses phase cross correlation to determine the 
 - min_window_size : Smallest window size that can be used to perform coregistration default to (64,64)
 - gaussian_weights : Whether to use Gaussian weights for SSIM
    - This puts more weight on the features at the center of the image
-- target_band :
+- target_band : 
 - template_band: 
 - settings:
   -   1. max_translation (float): Maximum translation (in meters) allowed for coregistration. Defaults to 1000m.
@@ -39,6 +39,31 @@ A simple coregistration tool that uses phase cross correlation to determine the 
             
 
 - <todo explain rest of settings>
+
+# Coregistration Result
+- Result of each individual coregistraion is stored in `CoregisterInterface().coreg_info`
+- 
+```
+    {
+        'shift_x': 0.0,
+        'shift_y': 0.0,
+        'shift_x_meters': 0.0,   # inital shift in x direction before any quality control in meters
+        'shift_y_meters': 0.0,   # inital shift in y direction before any quality control in meters
+        'initial_shift_x': 0.0,
+        'initial_shift_y': 0.0, # inital shift before any quality control in pixels ( pixels resolution is that of the image with the lowest resolution)
+        'error': 0.0,
+        'shift_reliability': 0.0, 
+        'qc': 0.0,
+        'description': '',  # did coregistration succeed, if not why it failed 
+        'success': 'False', # coregistered_ssim > original_ssim
+        'original_ssim': 0.0,
+        'coregistered_ssim': 0.0,
+        'change_ssim': 0.0, # change in the ssim value after coregistration (coregistered_ssim - original_ssim)
+        'window_size': (256, 256), # window size used to coregister this image
+    }
+```
+- 
+
 
 ## Example
 <Show place>
