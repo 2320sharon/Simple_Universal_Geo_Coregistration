@@ -22,10 +22,20 @@ A simple coregistration tool that uses phase cross correlation to determine the 
 3. Run a post processing script to filter out any outlier shifts (function coming soon)
 
 ## Settings
-- Window Size: Max size of the window to determine coregistration within defaults to 256,256
--   1.  `max_center_size` : Finds the largest possible window at the center of the overlap.
--   2. `matching_window_strategy`; Finds the window of window size at the first avaiable location by sliding a window across the overlap region.
-- min_window_size : Smallest window size default to (16,16)
+- Window Size: Max size of the window to determine coregistration within defaults to 100,100
+- Matching Window Strategy
+  -   1.  `max_center_size` : Finds the largest possible window at the center of the overlap. (default)
+  -   2. `use_predetermined_window_size`; Finds the window of window size at the first avaiable location by sliding a window across the overlap region.
+- min_window_size : Smallest window size that can be used to perform coregistration default to (64,64)
+- gaussian_weights : Whether to use Gaussian weights for SSIM
+   - This puts more weight on the features at the center of the image
+- target_band :
+- template_band: 
+- settings:
+  -   1. max_translation (float): Maximum translation (in meters) allowed for coregistration. Defaults to 1000m.
+  -   2. min_translation (float): Minimum translation (in meters) allowed for coregistration. Defaults to -1000m.
+            
+
 - <todo explain rest of settings>
 
 ## How to Use with CoastSeg
