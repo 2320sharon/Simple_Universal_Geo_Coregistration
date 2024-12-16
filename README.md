@@ -22,11 +22,55 @@ A simple coregistration tool that uses phase cross correlation to determine the 
 3. Run a post processing script to filter out any outlier shifts (function coming soon)
 
 ## Settings
-- Window Size: Max size of the window to determine coregistration within defaults to 256,256
--   1.  `max_center_size` : Finds the largest possible window at the center of the overlap.
--   2. `matching_window_strategy`; Finds the window of window size at the first avaiable location by sliding a window across the overlap region.
-- min_window_size : Smallest window size default to (16,16)
+- Window Size: Max size of the window to determine coregistration within. Defaults to 100,100
+  - This is the size of the region that both the target image ( image to coregister) and the reference image ( image to use a reference to coregister) will be cropped to
+  - Make sure that this value is even and ensure that it is large enough to capture important feature for coregistration.
+- Matching Window Strategy
+  -   1.  `max_center_size` : Finds the largest possible window at the center of the overlap. (default)
+  -   2. `use_predetermined_window_size`; Finds the window of window size at the first avaiable location by sliding a window across the overlap region.
+- min_window_size : Smallest window size that can be used to perform coregistration default to (64,64)
+- gaussian_weights : Whether to use Gaussian weights for SSIM
+   - This puts more weight on the features at the center of the image
+- target_band : The target's band number that should be used to coregister. Default is 1
+    -   Make sure the target band and template band point to the same type of band. For example target band 1 is red and template band 3 is red.
+- template_band: The template's band number that should be used to coregister. Default is 1
+- settings:
+  -   1. max_translation (float): Maximum translation (in meters) allowed for coregistration. Defaults to 1000m.
+  -   2. min_translation (float): Minimum translation (in meters) allowed for coregistration. Defaults to -1000m.
+            
+
 - <todo explain rest of settings>
+
+# Coregistration Result
+- Result of each individual coregistraion is stored in `CoregisterInterface().coreg_info`
+- 
+```
+    {
+        'shift_x': 0.0,
+        'shift_y': 0.0,
+        'shift_x_meters': 0.0,   # inital shift in x direction before any quality control in meters
+        'shift_y_meters': 0.0,   # inital shift in y direction before any quality control in meters
+        'initial_shift_x': 0.0,
+        'initial_shift_y': 0.0, # inital shift before any quality control in pixels ( pixels resolution is that of the image with the lowest resolution)
+        'error': 0.0,
+        'shift_reliability': 0.0, 
+        'qc': 0.0,
+        'description': '',  # did coregistration succeed, if not why it failed 
+        'success': 'False', # coregistered_ssim > original_ssim
+        'original_ssim': 0.0,
+        'coregistered_ssim': 0.0,
+        'change_ssim': 0.0, # change in the ssim value after coregistration (coregistered_ssim - original_ssim)
+        'window_size': (256, 256), # window size used to coregister this image
+    }
+```
+- 
+
+
+## Example
+<Show place>
+<Show Settings>
+<Show results and json file>
+<Show Before and After>
 
 ## How to Use with CoastSeg
 `coregister_class_coastseg_zoo_implementation.py`
@@ -37,6 +81,8 @@ A simple coregistration tool that uses phase cross correlation to determine the 
 <Make an example>
 
 # Outlier Filtering
+Outlier filtering is performed by reading the results of coregistering all the images in a dataset and filtering out bad shifts relative to the other files in the dataset.
+<Explain two method of outlier filtering>
 ![plot_outlier_shifts](https://github.com/user-attachments/assets/69f21601-4c22-4b75-ab98-bddc19e1b614)
 ![combined_z_scores](https://github.com/user-attachments/assets/fe6d3ce3-a080-41ed-b6ef-a6dcca0702e2)
 
