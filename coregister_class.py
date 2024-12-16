@@ -153,7 +153,7 @@ def find_best_window_in_combined_mask(tiff1_path, tiff2_path, min_height=16, min
     # best coords are  xmin : coords[1] , ymin : coords[0] , xmax : coords[3] , ymax : coords[2]
     cache[mask_hash] = (window_size_x, window_size_y),best_coords
 
-    return (window_size_x, window_size_y),best_coords
+    return (int(window_size_x), int(window_size_y)),best_coords
 
 def calculate_shift_reliability(template, target,):
     # Step 2: Compute the Cross Power Spectrum (CPS)
@@ -394,7 +394,7 @@ def get_valid_window_with_fallback(tiff1_path, tiff2_path, start_point=None,
             # print(f"rows: {rows}, cols: {cols}")
             valid, bounds = is_valid_window((rows, cols))
             if valid:
-                return (rows, cols), bounds
+                return (int(rows), int(cols)), bounds
             
             # Shrink window size, keeping it even
             rows -= 2
@@ -686,6 +686,7 @@ class CoregisterInterface:
         'coregistered_ssim': 0.0,
         'change_ssim': 0.0,
         'window_size': (256, 256), # default window size
+        'min_window_size': (24, 24), # default min window size
     }
 
     def __init__(self, 
@@ -698,8 +699,8 @@ class CoregisterInterface:
              verbose: bool = False, 
              target_band: int = 1, 
              template_band: int = 1, 
-             matching_window_strategy: str = 'max_overlap',
-             min_window_size: tuple = (64, 64),
+             matching_window_strategy: str = 'max_center_size',
+             min_window_size: tuple = (24, 24),
              ):
         """
         Initialize the Coregistration class.
@@ -719,14 +720,15 @@ class CoregisterInterface:
             verbose (bool, optional): Whether to print verbose output. Defaults to False.
             target_band (int, optional): Band number to use from the target image. Defaults to 1.
             template_band (int, optional): Band number to use from the template image. Defaults to 1.
-            matching_window_strategy (str, optional): Strategy to use for finding the matching window. Defaults to 'max_overlap'.
+            matching_window_strategy (str, optional): Strategy to use for finding the matching window. Defaults to 'max_center_size'.
                 Two options available:
                 ----------------------
                 1. max_center_size (default)
                    - It starts with the initial window size at the center of the overlap and shrinks until it finds a matching window or the minimum window size is reached.
                 2. use_predetermined_window_size: 
                     uses the window size provided in the window_size parameter. Starts from the corner of the image until it finds a matching window of the specified size
-            min_window_size (tuple, optional): Minimum window size for coregistration. Defaults to (64, 64).
+            min_window_size (tuple, optional): Minimum window size for coregistration. Defaults to (24, 24).
+            
         """
         self.verbose = verbose
 
@@ -830,9 +832,6 @@ class CoregisterInterface:
                 # if this method fails implement the VERY SLOW but reliable fallback method which has a cache in case its seen it before
                 if self.bounds == (None, None, None, None):
                     window_size, best_bounds = find_best_window_in_combined_mask(self.target_path, self.template_path, self.min_window_size[0],self.min_window_size[1], self.window_size[0],self.window_size[1], )
-
-                
-                
                 if verbose:
                     print(f"best_point: {best_point}, window_size: {window_size}, best_bounds: {best_bounds}")
             except Exception as e:
@@ -840,12 +839,16 @@ class CoregisterInterface:
                 print(f"Error: {e}")
                 traceback.print_exc()
                 self.best_bounds = (None, None, None, None)
+                if self.verbose:
+                    print(f"Error finding the best window starting point. Using the max overlap window size.")
                 self.clear_temp_files()
-            else:
+            else: # if the window is found
                 self.window_size = window_size
                 self.bounds = best_bounds
         elif self.matching_window_strategy == 'use_predetermined_window_size': # finds the first window of the specified size within the overlap
             self.bounds = self.find_matching_bounds(self.target_path, self.template_path)
+        else:
+            raise ValueError(f"Invalid matching window strategy: {self.matching_window_strategy}")
         
         self.coreg_info.update({'window_size': self.window_size})
 
@@ -1015,7 +1018,8 @@ class CoregisterInterface:
         """
         if self.coreg_info == {}:
             self.coreg_info = CoregisterInterface.DEFAULT_COREG_INFO.copy()
-            self.coreg_info.update({'window': self.window_size})
+            self.coreg_info.update({'window_size': self.window_size})
+            self.coreg_info.update({'min_window_size': self.min_window_size})
 
 
         # make the shifts json serializeable
@@ -1030,6 +1034,8 @@ class CoregisterInterface:
         self.coreg_info.update({'change_ssim': float(self.coreg_info['change_ssim'])})
         self.coreg_info.update({'shift_y_meters': float(self.coreg_info['shift_y_meters'])})
         self.coreg_info.update({'shift_x_meters': float(self.coreg_info['shift_x_meters'])})
+        self.coreg_info.update({'min_window_size': (int(self.min_window_size[0]),int(self.min_window_size[1]) )})
+        self.coreg_info.update({'window_size': (int(self.window_size[0]),int(self.window_size[1]) )})
 
         return self.coreg_info
 
@@ -1097,8 +1103,24 @@ class CoregisterInterface:
 
 
     def identify_shifts(self):
+        """
+        Identifies the shifts between the target and template images.
+        This method performs the following steps:
+        1. Retrieves the bounds of the reprojected target and template images.
+        2. Reads the bands from the matching bounds for both the target and template images.
+        3. Applies histogram matching to the target image using the template image.
+        4. Finds the shift between the template and target images using phase cross-correlation.
+        5. Estimates the reliability of the calculated shift.
+        6. Converts the shift from pixels to meters.
+        7. Performs quality control on the calculated shift.
+        8. Updates the coregistration information with the calculated shifts and related data.
+        Returns:
+            None
+        """
         # 1. Get the bounds of the reprojected target and template
         row_start, col_start, row_end, col_end = self.bounds
+        if self.verbose:
+            print(f"Bounds (row_start,col_start, row_end, col_end  ): {row_start, col_start, row_end, col_end}")
         # read the bands from the matching bounds for the target and template
         template_window = read_bounds(self.template_path,row_start,col_start,row_end,col_end,band_number=self.template_band)
         target_window = read_bounds(self.target_path,row_start,col_start,row_end,col_end,band_number=self.target_band)
