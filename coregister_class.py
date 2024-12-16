@@ -1,9 +1,7 @@
 import os
 import threading
-from concurrent.futures import ThreadPoolExecutor
-
+from collections import OrderedDict
 import numpy as np
-import matplotlib
 import matplotlib.pyplot as plt
 import tqdm
 import rasterio
@@ -38,8 +36,73 @@ lock = threading.Lock()
 # works even if the template is reprojected
 # works even if the template and target are the same resolution
 
+# 12/9/24 - 12/16/24
+# Improve the coreg info to include the shift in meters
+# Add a function to calculate the shift reliability
+# Add a function to calculate the SSIM within a specified bounds
+# Add a function to calculate the SSIM within a specified bounds
+# Implement LRU cache decorator to cache the results of the find_best_window_in_combined_mask function
 
-def find_best_window_in_combined_mask(tiff1_path, tiff2_path, min_height=16, min_width=16, max_height=256, max_width=256, alpha=0.6, beta=0.4):
+
+def lru_cache_decorator(max_size=50):
+    """Custom LRU Cache Decorator that can handle numpy arrays as arguments."""
+    cache = OrderedDict()
+
+    # Create a unique hash for the combined_mask
+    def mask_to_hash(mask):
+        return hashlib.md5(mask.tobytes()).hexdigest()
+
+    def decorator(func):
+        def wrapper(combined_mask, *args, **kwargs):
+            # Compute a hash for the combined_mask
+            mask_hash = mask_to_hash(combined_mask)
+
+            # Check if result is in cache
+            if mask_hash in cache:
+                # Move the accessed item to the end to mark it as recently used
+                cache.move_to_end(mask_hash)
+                return cache[mask_hash]
+
+            # Compute result since it's not in cache
+            result = func(combined_mask, *args, **kwargs)
+
+            # Add result to cache
+            cache[mask_hash] = result
+
+            # Evict least recently used item if cache exceeds max size
+            if len(cache) > max_size:
+                removed_key, _ = cache.popitem(last=False)
+                print(f"Evicted LRU cache entry: {removed_key}")
+
+            return result
+        return wrapper
+    return decorator
+
+def find_optimal_centered_window(tiff1_path, tiff2_path, min_height=16, min_width=16, max_height=256, max_width=256, alpha=0.6, beta=0.4):
+    """
+    Finds the best window within the overlapping region using constraints on size, center proximity, and max dimensions.
+    This matching window contains 0 no data pixels in both images. The best window is one considered to be closer to the center of the overlapping region and closer in size to
+    the maximum window size. The window size is always even. Uses a scoring function that combines the area of the window and the distance to the center to determine the best window.
+
+    Args:
+        tiff1_path (str): Path to the first TIFF file.
+        tiff2_path (str): Path to the second TIFF file.
+        min_height (int): Minimum allowed height of the window.
+        min_width (int): Minimum allowed width of the window.
+        max_height (int, optional): Maximum allowed height of the window.
+        max_width (int, optional): Maximum allowed width of the window.
+        alpha (float): Weight for the area in the scoring function.
+        beta (float): Weight for the distance to the center in the scoring function.
+
+    Returns:
+        tuple: Coordinates of the best window as (row_start, col_start, row_end, col_end).
+               If no valid window is found, raises a ValueError.
+    """
+    combined_mask = get_combined_mask(tiff1_path, tiff2_path)
+    return find_best_window_in_combined_mask(combined_mask, min_height, min_width, max_height, max_width, alpha, beta)
+
+@lru_cache_decorator(max_size=100)
+def find_best_window_in_combined_mask(combined_mask:np.ndarray, min_height=16, min_width=16, max_height=256, max_width=256, alpha=0.6, beta=0.4):
     """
     Finds the best window within the combined mask using constraints on size, center proximity, and max dimensions.
 
@@ -56,25 +119,6 @@ def find_best_window_in_combined_mask(tiff1_path, tiff2_path, min_height=16, min
         tuple: Coordinates of the best window as (row_start, col_start, row_end, col_end).
                If no valid window is found, raises a ValueError.
     """
-    combined_mask = get_combined_mask(tiff1_path, tiff2_path)
-
-    # Create a unique hash for the combined_mask
-    def mask_to_hash(mask):
-        return hashlib.md5(mask.tobytes()).hexdigest()
-
-    # Cache dictionary
-    if not hasattr(find_best_window_in_combined_mask, "_cache"):
-        find_best_window_in_combined_mask._cache = {}
-
-    cache = find_best_window_in_combined_mask._cache
-
-    # Generate hash of the combined_mask
-    mask_hash = mask_to_hash(combined_mask)
-
-    # If result is cached, return it
-    if mask_hash in cache:
-        return cache[mask_hash]
-
     # Ensure mask is inverted (0 = NoData, 1 = Valid Data)
     valid_mask = ~combined_mask
 
@@ -139,7 +183,7 @@ def find_best_window_in_combined_mask(tiff1_path, tiff2_path, min_height=16, min
 
         if score > best_score:
             best_score = score
-            best_coords = (rect_row_start, rect_col_start, rect_row_end, rect_col_end)
+            best_coords = (int(rect_row_start), rect_col_start, rect_row_end, rect_col_end)
 
     if not best_coords:
         raise ValueError("No valid window found in the combined mask.")
@@ -147,11 +191,6 @@ def find_best_window_in_combined_mask(tiff1_path, tiff2_path, min_height=16, min
     row_start, col_start, row_end, col_end = best_coords
     window_size_x = col_end - col_start + 1
     window_size_y = row_end - row_start + 1
-
-
-    #row_start, col_start, row_end, col_end = best_coords
-    # best coords are  xmin : coords[1] , ymin : coords[0] , xmax : coords[3] , ymax : coords[2]
-    cache[mask_hash] = (window_size_x, window_size_y),best_coords
 
     return (int(window_size_x), int(window_size_y)),best_coords
 
@@ -295,6 +334,16 @@ def find_best_starting_point(tiff1_path, tiff2_path):
         return best_point
 
 def get_combined_mask(tiff1_path, tiff2_path):
+    """
+    Generate a combined mask of invalid data regions from two overlapping TIFF files.
+    This function reads two TIFF files, determines their overlapping region, and creates a combined mask
+    indicating the invalid data regions within the overlap.
+    Parameters:
+    tiff1_path (str): Path to the first TIFF file.
+    tiff2_path (str): Path to the second TIFF file.
+    Returns:
+    numpy.ndarray: A boolean array where True indicates invalid data regions in the overlapping area of the two TIFF files.
+    """
     with rasterio.open(tiff1_path) as src1, rasterio.open(tiff2_path) as src2:
         # Define overlapping window between the two TIFFs
         overlap_window = src1.window(*src1.bounds).intersection(src2.window(*src2.bounds))
@@ -728,7 +777,7 @@ class CoregisterInterface:
                 2. use_predetermined_window_size: 
                     uses the window size provided in the window_size parameter. Starts from the corner of the image until it finds a matching window of the specified size
             min_window_size (tuple, optional): Minimum window size for coregistration. Defaults to (24, 24).
-            
+
         """
         self.verbose = verbose
 
@@ -831,7 +880,7 @@ class CoregisterInterface:
                 window_size, best_bounds = get_valid_window_with_fallback(self.target_path, self.template_path, start_point=best_point,initial_window_size=self.window_size,min_window_size=self.min_window_size)
                 # if this method fails implement the VERY SLOW but reliable fallback method which has a cache in case its seen it before
                 if self.bounds == (None, None, None, None):
-                    window_size, best_bounds = find_best_window_in_combined_mask(self.target_path, self.template_path, self.min_window_size[0],self.min_window_size[1], self.window_size[0],self.window_size[1], )
+                    window_size, best_bounds = find_optimal_centered_window(self.target_path, self.template_path, self.min_window_size[0],self.min_window_size[1], self.window_size[0],self.window_size[1], )
                 if verbose:
                     print(f"best_point: {best_point}, window_size: {window_size}, best_bounds: {best_bounds}")
             except Exception as e:
@@ -847,6 +896,19 @@ class CoregisterInterface:
                 self.bounds = best_bounds
         elif self.matching_window_strategy == 'use_predetermined_window_size': # finds the first window of the specified size within the overlap
             self.bounds = self.find_matching_bounds(self.target_path, self.template_path)
+        elif self.matching_window_strategy == 'optimal_centered_window': # finds all possible windows then returns the largest window thats centered at the center of the overlap (VERY SLOW)
+            try:
+                window_size, best_bounds = find_optimal_centered_window(self.target_path, self.template_path, self.min_window_size[0],self.min_window_size[1], self.window_size[0],self.window_size[1], )
+                self.window_size = window_size
+                self.bounds = best_bounds
+            except Exception as e:
+                import traceback
+                print(f"Error: {e}")
+                traceback.print_exc()
+                self.best_bounds = (None, None, None, None)
+                if self.verbose:
+                    print(f"Error finding the best window starting point. Using the max overlap window size.")
+                self.clear_temp_files() 
         else:
             raise ValueError(f"Invalid matching window strategy: {self.matching_window_strategy}")
         
