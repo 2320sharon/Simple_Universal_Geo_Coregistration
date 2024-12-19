@@ -1,4 +1,3 @@
-import numpy as np
 import os
 import numpy as np
 import matplotlib.patches as mpatches
@@ -198,53 +197,6 @@ def plot_x_y_delta_ssim_scatter(results, output_dir):
     print(f"Plot saved to {os.path.join(output_dir, 'x_y_delta_ssim_scatter_plot.png')}")
 
 
-
-# def plot_x_y_delta_ssim_scatter(result_json_path, output_dir):
-#     with open(result_json_path, 'r') as json_file:
-#         results = json.load(json_file)
-
-#          # Initialize counters for each category
-#         counts = {
-#             'no_valid_window': 0,
-#             'shift_exceeded': 0,
-#             'no_shift': 0,
-#             'success': 0,
-#             'failed': 0
-#         }
-
-#         # make a scatter plot of coregistered ssim vs original ssim scores and color those whose 'success' is True green and those whose 'success' is False red
-#         fig, ax = plt.subplots(figsize=(10, 6))  # Increase figure size if necessary
-#         for key, value in results.items():
-#             if key == 'file_inputs' or 'settings' in key:
-#                 continue
-#             if "shift exceeded" in value['description']:
-#                 ax.scatter(value['shift_x'], value['shift_y'],value['change_ssim'], color='orange')  # bad shift
-#                 counts['shift_exceeded'] += 1
-#             elif value['success'] == 'True':
-#                 ax.scatter(value['shift_x'], value['shift_y'],value['change_ssim'], color='green')
-#                 counts['success'] += 1
-#             else:
-#                 ax.scatter(value['shift_x'], value['shift_y'],value['change_ssim'], color='red')  # the shift made the coregistered image worse
-#                 counts['failed'] += 1
-
-#         # Create custom legend with counts
-#         orange_patch = mpatches.Patch(color='orange', label=f'Shift exceeded ({counts["shift_exceeded"]})')
-#         green_patch = mpatches.Patch(color='green', label=f'Success ({counts["success"]})')
-#         red_patch = mpatches.Patch(color='red', label=f'Shift made it worse ({counts["failed"]})')
-
-#         ax.legend(handles=[ orange_patch,  green_patch, red_patch], loc='center left', bbox_to_anchor=(1, 0.5))
-
-#         ax.set_xlabel('X shift in pixels')
-#         ax.set_ylabel('Y shift in pixels')
-#         # ax.set_zlabel('delta SSIM')
-#         ax.set_title(' X Y delta SSIM scatter plot')
-
-#         # plt.tight_layout(rect=[0, 0, 0.85, 1])  # Adjust the layout to make space for the legend
-#         plt.tight_layout()  # Adjust the layout to make space for the legend
-#         plt.savefig(os.path.join(output_dir, 'x_y_delta_ssim_scatter_plot.png'))
-#         print(f"Plot saved to {os.path.join(output_dir, 'x_y_delta_ssim_scatter_plot.png')}")
-
-
 def plot_shift_histogram(results, output_dir):
 
     shifts_x = []
@@ -347,43 +299,6 @@ def plot_coregistration_success_by_month(results, output_dir):
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, 'coregistration_success_by_month.png'))
     print(f"Plot saved to {os.path.join(output_dir, 'coregistration_success_by_month.png')}")
-
-
-def create_readme(coregistered_dir, results):
-    # create a readme.txt file at the output_dir
-    with open(os.path.join(coregistered_dir, 'readme.txt'), 'w') as f:
-        # read the json data and count the number of successful coregistrations
-        successful_coregistrations = 0
-        qc_failed = 0
-        improvements = []
-        for key, value in results.items():
-            if 'settings' in key:
-                continue
-            if value['success'] == 'True':
-                successful_coregistrations += 1
-                # create a list of the change in ssim score for each successful coregistration
-                # then create an average improvement in ssim score
-                improvements.append(value['change_ssim'])
-            if value['qc'] == 0:
-                qc_failed += 1
-            if len(improvements) == 0:
-                average_improvement = 0
-            elif len(improvements) == 1:
-                average_improvement = improvements[0]
-            else:
-                average_improvement = np.mean(improvements)
-            f.write(f"Number of successful coregistrations: {successful_coregistrations}\n")
-            f.write(f"Total number of coregistrations: {len(results) - 2}\n")
-            f.write(f"Average improvement in SSIM score: {average_improvement}\n")
-            f.write(f"Number of QC failed coregistrations: {qc_failed}\n")
-            f.write(f"Settings: {results['settings']}\n")
-
-
-def merge_list_of_dicts(list_of_dicts):
-    merged_dict = {}
-    for d in list_of_dicts:
-        merged_dict.update(d)
-    return merged_dict
 
 
 def get_date_from_filename(filename):
