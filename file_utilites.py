@@ -5,6 +5,7 @@ import shutil
 import re
 import numpy as np
 from collections import OrderedDict
+from enum import Enum
 
 from coastsat import SDS_preprocess
 
@@ -14,6 +15,57 @@ class Satellite(Enum):
     L8 = 'L8'
     L9 = 'L9'
     S2 = 'S2'
+
+def save_coregistered_config(config_path,output_dir,settings:dict):
+    #open the config.json file, modify it to save the coregistered directory as the new sitename and add the coregistered settings
+    with open(config_path, 'r') as f:
+        config = json.load(f)
+
+    # update the sitename for each ROI ID
+    roi_ids = config.get('roi_ids', [])
+    for roi_id in roi_ids:
+        inputs = config[roi_id]
+        inputs.update({'sitename': config[roi_id]['sitename'] + os.path.sep + 'coregistered'})
+    config.update({'coregistered_settings': settings})
+
+    new_config_path = os.path.join(output_dir, 'config.json')
+    # write the config to the coregistered directory
+    with open(new_config_path, 'w') as f:
+        json.dump(config, f, indent=4)
+
+    return new_config_path
+
+def get_config(config_path,roi_id=None):
+    with open(config_path, 'r') as f:
+        config = json.load(f)
+    if roi_id:
+        if roi_id not in config:
+            raise ValueError(f"ROI ID {roi_id} not found in config file.")
+        config = config[roi_id]
+    return config
+
+def copy_remaining_tiffs(df,coregistered_dir,session_dir,satellites,replace_failed_files=False):
+    """
+    Applies shifts to TIFF files based on the provided DataFrame and copies unregistered files to the coregistered directory.
+    Parameters:
+    df (pandas.DataFrame): DataFrame containing information about the files, including whether they passed filtering.
+    coregistered_dir (str): Directory where the coregistered files will be stored.
+    session_dir (str): Directory of the current session containing the original files.
+    satellites (list): List of satellite names to process.
+    replace_failed_files (bool): Whether to replace failed coregistrations with the original unregistered files.
+    Returns:
+    None
+    """    
+    # this means that all the files should be copied over to the coregistered file whether the coregistration passed or not
+    if replace_failed_files:
+        # Copy the remaining unregistered files for the swir, mask, meta and pan directories to the coregistered directory
+        filenames = df['filename']  # this copies all files regardless of whether they passed the filtering
+        copy_files_for_satellites(filenames, coregistered_dir, session_dir, satellites,)
+    else:
+        # Only copy the meta directories to the coregistered directory for the files that passed the filtering
+        filenames = df[df['filter_passed']==True]['filename']
+        copy_meta_for_satellites(filenames, coregistered_dir, session_dir, satellites)
+
 
 def save_coregistered_results(results, WINDOW_SIZE, template_path, result_json_path, settings,satellite:str="") -> OrderedDict:
     """
@@ -230,11 +282,11 @@ def process_failed_coregistrations(failed_coregs, coregistered_dir, unregistered
         raise ValueError("Exactly one of 'copy_only' or 'move_only' must be True. Both cannot be True or False.")
 
     # Moves (or copies) the failed coregistration files to a 'failed_coregistration' directory for each satellite
-    handle_failed_coregs(failed_coregs, coregistered_dir, copy_only=copy_only, move_only=move_only)
+    handle_failed_coregs_per_satellite(failed_coregs, coregistered_dir, copy_only=copy_only, move_only=move_only)
 
     # Copy the original files to the coregistered directory (replaces the failed coregistrations with the original
     if replace:
-        copy_original_to_coregistered(failed_coregs, unregistered_dir, coregistered_dir, subfolder_name)
+        copy_original_to_coregistered_per_satellite(failed_coregs, unregistered_dir, coregistered_dir, subfolder_name)
 
 def open_json_file(json_file):
     # Load JSON data
@@ -273,9 +325,34 @@ def moved_files(failed_coregs, coregistered_dir, copy_only=True, move_only=False
                     shutil.move(src, dst)
                     print(f"Moved {filename} to {dst}")
 
+def move_failed_files(failed_coregs, coregistered_dir,source_dir:str):
+    """
+    Handles failed coregistration files by moving them to a 'failed_coregistration' directory within the coregistered directory.
+    Parameters:
+        failed_coregs (list): A list of filenames that failed coregistration.
+        coregistered_dir (str): The base directory containing coregistered satellite data.
+        source_dir (str): The directory containing the files to move.
+    """
+    if isinstance(failed_coregs, str):
+        failed_coregs = [failed_coregs]
+
+    failed_dir = os.path.join(coregistered_dir, 'failed_coregistration')
+    os.makedirs(failed_dir, exist_ok=True)
 
 
-def handle_failed_coregs(failed_coregs, coregistered_dir, copy_only=True, move_only=False):
+    for filename in failed_coregs:
+        print(f"filenames: {filename}")
+        src = os.path.join(source_dir, filename)
+        dst = os.path.join(failed_dir, filename)
+        print(f"src: {src}")
+        print(f"dst: {dst}")
+        if os.path.exists(src):
+            if not os.path.exists(dst):
+                shutil.move(src, dst)
+                print(f"Moved {filename} to {dst}")
+
+
+def handle_failed_coregs_per_satellite(failed_coregs, coregistered_dir, copy_only=True, move_only=False):
     """
     Handles failed coregistration files by copying or moving them to specific directories.
     This is specifically designed to work with CoastSat and CoastSeg sessions.
@@ -306,7 +383,7 @@ def handle_failed_coregs(failed_coregs, coregistered_dir, copy_only=True, move_o
                     shutil.move(src, dst)
                     print(f"Moved {filename} to {dst}")
 
-def copy_original_to_coregistered(failed_coregs, unregistered_dir, coregistered_dir,subfolder_name = 'ms'):
+def copy_original_to_coregistered_per_satellite(failed_coregs, unregistered_dir, coregistered_dir,subfolder_name = 'ms'):
     """
     Copies the original files from the unregistered directory to the coregistered directory
     for the specified satellite.

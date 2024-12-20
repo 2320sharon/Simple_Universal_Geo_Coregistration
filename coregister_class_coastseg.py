@@ -8,6 +8,7 @@ import matplotlib
 from coregister_class import CoregisterInterface
 import plotting
 from collections import OrderedDict
+import file_utils
 
 matplotlib.use('Agg')  # Use Agg backend for non-GUI rendering
 
@@ -50,7 +51,7 @@ def save_coregistered_results(results, satellite, WINDOW_SIZE, template_path, re
 
     # Merge results for the current satellite
     print(f"results: {results}")
-    results[satellite] = plotting.merge_list_of_dicts(results[satellite])
+    results[satellite] = file_utils.merge_list_of_dicts(results[satellite])
     print(f"results: {results}")
 
     # Update settings and add to results
@@ -142,7 +143,7 @@ for folder in os.listdir(session_dir):
         results[satellite] = coregister_files(tif_files, template_path, coregistered_directory, satellite, WINDOW_SIZE, settings, matching_window_strategy)
         # Save the results to the same coregistered directory
         if len(results[satellite]) > 1:
-            results[satellite] = plotting.merge_list_of_dicts(results[satellite])
+            results[satellite] = file_utils.merge_list_of_dicts(results[satellite])
         
 
 settings.update({'window_size': WINDOW_SIZE, 'template_path': template_path, })

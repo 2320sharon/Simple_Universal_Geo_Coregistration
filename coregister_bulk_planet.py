@@ -5,7 +5,7 @@ import math
 import json
 import rasterio
 import glob
-
+import file_utilites as file_utils
 
 from skimage.metrics import structural_similarity as ssim
 from skimage import exposure
@@ -101,7 +101,7 @@ for target_path in tqdm(tif_files):
 
 print(f"len(results): {len(results)}")
 # Save the results to the same coregistered directory
-results = plotting.merge_list_of_dicts(results)
+results = file_utils.merge_list_of_dicts(results)
 
 settings.update({'window_size': WINDOW_SIZE, 'template_path': template_path,'target_band': TARGET_BAND, 'template_band': TEMPLATE_BAND})
 results['settings'] = settings
