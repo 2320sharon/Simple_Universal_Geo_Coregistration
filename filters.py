@@ -221,9 +221,9 @@ def filter_shifts_by_range(df: pd.DataFrame, min_shift_meters: tuple, max_shift_
 
     return df
 
-def create_dataframe_from_json(result_json_path:str):
+def create_dataframe_with_satellites(results:dict):
     """
-    Create a DataFrame from a JSON file containing transformation results.
+    Create a DataFrame from a dictionary containing transformation results.
     
     Expected JSON format:
     {
@@ -267,16 +267,13 @@ def create_dataframe_from_json(result_json_path:str):
     }
 
     Args:
-        result_json_path (str): Path to the transformation results JSON file.
+       results(dict)
 
     Returns:
         pd.DataFrame: The DataFrame created from the JSON file.
     
     """
-    # Load JSON data
-    with open(result_json_path, 'r') as json_file:
-        results = json.load(json_file)
-    
+
     data = []
     for satellite, files in results.items():
         if satellite == "settings":
@@ -296,13 +293,31 @@ def create_dataframe_from_json(result_json_path:str):
     df.set_index('filename', inplace=True)
     return df
 
-def apply_filtering(result_json_path:str, settings:dict):
+def apply_filtering(results, output_path:str, settings:dict):
     """
     Processes transformation results from a JSON file, filters and identifies outliers,
     and saves the filtered DataFrame to a new CSV file.
 
     Args:
-        result_json_path (str): Path to the transformation results JSON file.
+        results(dict): Dictionary containing transformation results.
+        Either in the format
+        {
+            'L8': {
+                'filename1.tif': {'shift_x': 10.0, 'shift_y': 20.0, 'shift_x_meters': 100.0, 'shift_y_meters': 200.0, 'ssim': 0.95},
+                'filename2.tif': {'shift_x': -5.0, 'shift_y': 15.0, 'shift_x_meters': -50.0, 'shift_y_meters': 150.0, 'ssim': 0.92}
+            },
+            'L9': {
+                'filename1.tif': {'shift_x': 10.0, 'shift_y': 20.0, 'shift_x_meters': 100.0, 'shift_y_meters': 200.0, 'ssim': 0.95},
+            },
+            'settings': {'max_translation': 1000, 'min_translation': -1000, 'window_size': [256, 256]}
+        }
+        or
+        {
+            'filename1.tif': {'shift_x': 10.0, 'shift_y': 20.0, 'shift_x_meters': 100.0, 'shift_y_meters': 200.0, 'ssim': 0.95},
+            'filename2.tif': {'shift_x': -5.0, 'shift_y': 15.0, 'shift_x_meters': -50.0, 'shift_y_meters': 150.0, 'ssim': 0.92},
+            'settings': {'max_translation': 1000, 'min_translation': -1000, 'window_size': [256, 256]}
+        }   
+        output_path (str): Path to the transformation results JSON file.
         settings (dict): A dictionary with the following keys:
             - 'min_shift_meters' (tuple(float)): Minimum shift distance for filtering for x and y
                 Example: (-200, -200) for x and y respectively.
@@ -320,17 +335,14 @@ def apply_filtering(result_json_path:str, settings:dict):
     max_shift_meters = settings.get('max_shift_meters', float('inf'))
     z_threshold = settings.get('z_threshold', None)
 
-    df = create_dataframe_from_json(result_json_path)
-    # Load JSON data (old method of loading json)
-    # with open(result_json_path, 'r') as json_file:
-    #     results = json.load(json_file)
 
-    # df = pd.DataFrame(results).transpose()
+    try:
+        df = create_dataframe_with_satellites(results)
+    except Exception as e:
+        # check if the results is in the format {'filename': {'shift_x': 10.0, 'shift_y': 20.0, ..},'filename1': {'shift_x': 10.0, 'shift_y': 20.0, ..}}
+        df = pd.DataFrame(results).transpose()
 
     df.fillna(0.0, inplace=True)
-
-    # print(f"df.index: {df.index}")
-    # print(f"df.head()   {df.head()}")
 
     # Process and plot outliers (dummy placeholder, replace with your actual implementation)
     if z_threshold:
@@ -350,18 +362,7 @@ def apply_filtering(result_json_path:str, settings:dict):
     df = df[['filename'] + [col for col in df.columns if col != 'filename']]
 
     # Save to CSV
-    output_csv_path = result_json_path.replace('.json', '_filtered.csv')
-    df.to_csv(output_csv_path, index=False)
-    print(f"Filtered DataFrame saved to {output_csv_path}")
+    df.to_csv(output_path, index=False)
+    print(f"Filtered DataFrame saved to {output_path}")
 
-    return output_csv_path
-
-# Variables
-# settings = {
-#     'min_shift_meters': (-200,-200),
-#     'max_shift_meters': (200,200),
-#     'z_threshold': 1.5,         # Set to None to disable outlier detection using the z score
-# }
-
-# result_json_path = r"C:\development\doodleverse\coastseg\CoastSeg\data\ID_1_datetime11-04-24__04_30_52_original_mess_with\S2\ms\max_center_size_no_histogram_match_window_size_256x256\transformation_results.json"
-# apply_filtering(result_json_path, settings)
+    return output_path

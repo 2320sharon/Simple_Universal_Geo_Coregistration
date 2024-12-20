@@ -1,17 +1,268 @@
 import os
+import glob
 import json
 import shutil
-import pandas as pd
+import re
+import numpy as np
+from collections import OrderedDict
+from enum import Enum
+
 from coastsat import SDS_preprocess
 
-# def move_out_failures(coreg_dir,satellites,base_dir,csv_path):
-#     # 1. read the filtered csv
-#     df = pd.read_csv(csv_path)
+class Satellite(Enum):
+    L5 = 'L5'
+    L7 = 'L7'
+    L8 = 'L8'
+    L9 = 'L9'
+    S2 = 'S2'
 
-#     # 2. get the filenames that were filtered out (filter_passed == False)
-#     # failed_coregs = df[~df['filter_passed']]['filename']
-#     failed_coregs = df[~df['filter_passed']]
-#     # 
+def save_coregistered_config(config_path,output_dir,settings:dict):
+    #open the config.json file, modify it to save the coregistered directory as the new sitename and add the coregistered settings
+    with open(config_path, 'r') as f:
+        config = json.load(f)
+
+    # update the sitename for each ROI ID
+    roi_ids = config.get('roi_ids', [])
+    for roi_id in roi_ids:
+        inputs = config[roi_id]
+        inputs.update({'sitename': config[roi_id]['sitename'] + os.path.sep + 'coregistered'})
+    config.update({'coregistered_settings': settings})
+
+    new_config_path = os.path.join(output_dir, 'config.json')
+    # write the config to the coregistered directory
+    with open(new_config_path, 'w') as f:
+        json.dump(config, f, indent=4)
+
+    return new_config_path
+
+def get_config(config_path,roi_id=None):
+    with open(config_path, 'r') as f:
+        config = json.load(f)
+    if roi_id:
+        if roi_id not in config:
+            raise ValueError(f"ROI ID {roi_id} not found in config file.")
+        config = config[roi_id]
+    return config
+
+def copy_remaining_tiffs(df,coregistered_dir,session_dir,satellites,replace_failed_files=False):
+    """
+    Applies shifts to TIFF files based on the provided DataFrame and copies unregistered files to the coregistered directory.
+    Parameters:
+    df (pandas.DataFrame): DataFrame containing information about the files, including whether they passed filtering.
+    coregistered_dir (str): Directory where the coregistered files will be stored.
+    session_dir (str): Directory of the current session containing the original files.
+    satellites (list): List of satellite names to process.
+    replace_failed_files (bool): Whether to replace failed coregistrations with the original unregistered files.
+    Returns:
+    None
+    """    
+    # this means that all the files should be copied over to the coregistered file whether the coregistration passed or not
+    if replace_failed_files:
+        # Copy the remaining unregistered files for the swir, mask, meta and pan directories to the coregistered directory
+        filenames = df['filename']  # this copies all files regardless of whether they passed the filtering
+        copy_files_for_satellites(filenames, coregistered_dir, session_dir, satellites,)
+    else:
+        # Only copy the meta directories to the coregistered directory for the files that passed the filtering
+        filenames = df[df['filter_passed']==True]['filename']
+        copy_meta_for_satellites(filenames, coregistered_dir, session_dir, satellites)
+
+
+def save_coregistered_results(results, WINDOW_SIZE, template_path, result_json_path, settings,satellite:str="") -> OrderedDict:
+    """
+    Process and save coregistration results ensuring 'settings' is the last item in the dictionary.
+
+    Args:
+        results (dict): The coregistration results dictionary.
+        WINDOW_SIZE (int): The window size setting.
+        template_path (str): The template path for coregistration.
+        result_json_path (str): Path to save the resulting JSON file.
+        satellite (str): The satellite name.
+        settings (dict): Additional settings to include in the results.
+
+    Returns:
+        OrderedDict: The processed results dictionary with 'settings' as the last item.
+    """
+    class NumpyEncoder(json.JSONEncoder):
+        def default(self, obj):
+            if isinstance(obj, np.integer):
+                return int(obj)
+            if isinstance(obj, np.floating):
+                return float(obj)
+            if isinstance(obj, np.ndarray):
+                return obj.tolist()
+            return super(NumpyEncoder, self).default(obj)
+        
+    if satellite:
+        # Merge results for the current satellite
+        results[satellite] = merge_list_of_dicts(results[satellite])
+
+    # Update settings and add to results
+    settings.update({'window_size': WINDOW_SIZE, 'template_path': template_path})
+    results['settings'] = settings
+    
+    # Ensure 'settings' is the last key
+    results_ordered = OrderedDict(results)
+    results_ordered.move_to_end('settings')
+    # Save to JSON file
+    with open(result_json_path, 'w') as json_file:
+        json.dump(results_ordered, json_file, indent=4,cls=NumpyEncoder)
+    print(f"Saved results to: {result_json_path}")
+
+    return results_ordered
+
+def create_readme(coregistered_dir, results):
+    # create a readme.txt file at the output_dir
+    with open(os.path.join(coregistered_dir, 'readme.txt'), 'w') as f:
+        # read the json data and count the number of successful coregistrations
+        successful_coregistrations = 0
+        qc_failed = 0
+        improvements = []
+        for key, value in results.items():
+            if 'settings' in key:
+                continue
+            if value['success'] == 'True':
+                successful_coregistrations += 1
+                # create a list of the change in ssim score for each successful coregistration
+                # then create an average improvement in ssim score
+                improvements.append(value['change_ssim'])
+            if value['qc'] == 0:
+                qc_failed += 1
+            if len(improvements) == 0:
+                average_improvement = 0
+            elif len(improvements) == 1:
+                average_improvement = improvements[0]
+            else:
+                average_improvement = np.mean(improvements)
+            f.write(f"Number of successful coregistrations: {successful_coregistrations}\n")
+            f.write(f"Total number of coregistrations: {len(results) - 2}\n")
+            f.write(f"Average improvement in SSIM score: {average_improvement}\n")
+            f.write(f"Number of QC failed coregistrations: {qc_failed}\n")
+            f.write(f"Settings: {results['settings']}\n")
+
+
+def merge_list_of_dicts(list_of_dicts):
+    merged_dict = {}
+    for d in list_of_dicts:
+        merged_dict.update(d)
+    return merged_dict
+
+def save_coregistered_results(results, WINDOW_SIZE, template_path, result_json_path, settings,satellite:str="") -> OrderedDict:
+    """
+    Process and save coregistration results ensuring 'settings' is the last item in the dictionary.
+
+    Args:
+        results (dict): The coregistration results dictionary.
+        WINDOW_SIZE (int): The window size setting.
+        template_path (str): The template path for coregistration.
+        result_json_path (str): Path to save the resulting JSON file.
+        satellite (str): The satellite name.
+        settings (dict): Additional settings to include in the results.
+
+    Returns:
+        OrderedDict: The processed results dictionary with 'settings' as the last item.
+    """
+    class NumpyEncoder(json.JSONEncoder):
+        def default(self, obj):
+            if isinstance(obj, np.integer):
+                return int(obj)
+            if isinstance(obj, np.floating):
+                return float(obj)
+            if isinstance(obj, np.ndarray):
+                return obj.tolist()
+            return super(NumpyEncoder, self).default(obj)
+        
+    if satellite:
+        # Merge results for the current satellite
+        results[satellite] = merge_list_of_dicts(results[satellite])
+
+    # Update settings and add to results
+    settings.update({'window_size': WINDOW_SIZE, 'template_path': template_path})
+    results['settings'] = settings
+    
+    # Ensure 'settings' is the last key
+    results_ordered = OrderedDict(results)
+    results_ordered.move_to_end('settings')
+    # Save to JSON file
+    with open(result_json_path, 'w') as json_file:
+        json.dump(results_ordered, json_file, indent=4,cls=NumpyEncoder)
+    print(f"Saved results to: {result_json_path}")
+
+    return results_ordered
+
+
+def find_satellite_in_filename(filename: str) -> str:
+    """Use regex to find the satellite name in the filename.
+    Satellite name is case-insensitive and can be separated by underscore (_) or period (.)"""
+    for satellite in Satellite:
+        # Adjusting the regex pattern to consider period (.) as a valid position after the satellite name
+        if re.search(fr'(?<=[\b_]){satellite.value}(?=[\b_.]|$)', filename, re.IGNORECASE):
+            return satellite.value
+    return ""
+
+def get_planet_dict(directory: str, file_type: str,contains=None ) -> dict:
+    """
+
+    
+    Parameters:
+    -----------
+    directory : str
+        The directory where the files are located.
+
+    file_type : str
+        The filetype of the files to be included.
+        Ex. 'jpg'
+
+    contains (str, optional): Substring that the filename must contain. Defaults to None.
+
+    Returns:
+    --------
+    dict
+
+    
+    """
+
+    satellites = {"planet": set(),}
+    satellites['planet'] = get_matching_files(directory, file_type,contains)
+    
+    return satellites
+
+def extract_date_from_filename(filename: str,pattern = r"^\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}") -> str:
+    """Extracts the first part of the filename that matches the pattern from a filename.
+
+     - The default is that the filename is expected to have the date in format "YYYY-MM-DD-HH-MM-SS".
+     - Example 2024-05-28-22-18-07 would be extracted from "2024-05-28-22-18-07_S2_ID_1_datetime11-04-24__04_30_52_ms.tif" for the default pattern
+
+    Args:
+        filename (str): The filename to extract the date from.
+        pattern (str): The regex pattern to match the date string. Defaults to r"^\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}". This matches "YYYY-MM-DD-HH-MM-SS"
+
+    """
+    match = re.match(pattern, filename)
+    if match:
+        return match.group(0)
+    else:
+        return ""
+
+def get_matching_files(directory, file_type, contains=None):
+    """
+    Get files from a directory filtered by file type and an optional substring in the filename.
+
+    Args:
+        directory (str): Path to the directory to search for files.
+        file_type (str): File extension to filter by (e.g., 'tif').
+        contains (str, optional): Substring that the filename must contain.
+
+    Returns:
+        list: List of matching file paths.
+    """
+    # Adjust the pattern to include the 'contains' substring, if provided
+    if contains:
+        pattern = os.path.join(directory, f"*{contains}*.{file_type}")
+    else:
+        pattern = os.path.join(directory, f"*.{file_type}")
+    
+    # Use glob to find files directly matching the pattern
+    return glob.glob(pattern)
 
 
 def merge_list_of_dicts(list_of_dicts):
@@ -38,17 +289,80 @@ def process_failed_coregistrations(failed_coregs, coregistered_dir, unregistered
         raise ValueError("Exactly one of 'copy_only' or 'move_only' must be True. Both cannot be True or False.")
 
     # Moves (or copies) the failed coregistration files to a 'failed_coregistration' directory for each satellite
-    handle_failed_coregs(failed_coregs, coregistered_dir, copy_only=copy_only, move_only=move_only)
+    handle_failed_coregs_per_satellite(failed_coregs, coregistered_dir, copy_only=copy_only, move_only=move_only)
 
     # Copy the original files to the coregistered directory (replaces the failed coregistrations with the original
     if replace:
-        copy_original_to_coregistered(failed_coregs, unregistered_dir, coregistered_dir, subfolder_name)
+        copy_original_to_coregistered_per_satellite(failed_coregs, unregistered_dir, coregistered_dir, subfolder_name)
 
+def open_json_file(json_file):
+    # Load JSON data
+    with open(json_file, 'r') as json_file:
+        results = json.load(json_file)
+    return results
 
-
-def handle_failed_coregs(failed_coregs, coregistered_dir, copy_only=True, move_only=False):
+def moved_files(failed_coregs, coregistered_dir, copy_only=True, move_only=False):
     """
     Handles failed coregistration files by copying or moving them to specific directories.
+    This is specifically designed to work with CoastSat and CoastSeg sessions.
+
+    Parameters:
+        failed_coregs (dict): A dictionary where keys are satellite names and values are lists of filenames that failed coregistration.
+        coregistered_dir (str): The base directory containing coregistered satellite data.
+        copy_only (bool): If True, files will be copied to the failed directory. Defaults to True.
+        move_only (bool): If True, files will be moved to the failed directory. Defaults to False.
+    """
+    for satellite, filenames in failed_coregs.items():
+        # Create a directory for the satellite's failed coregistration
+        failed_dir = os.path.join(coregistered_dir, 'failed_coregistration')
+        os.makedirs(failed_dir, exist_ok=True)
+
+        # Define the satellite directory
+        satellite_dir = os.path.join(coregistered_dir, satellite, 'ms')
+
+        # Copy or move the failed coregistration files
+        for filename in filenames:
+            src = os.path.join(satellite_dir, filename)
+            dst = os.path.join(failed_dir, filename)
+            if os.path.exists(src):
+                if copy_only:
+                    shutil.copy(src, dst)
+                    print(f"Copied {filename} to {dst}")
+                elif move_only:
+                    shutil.move(src, dst)
+                    print(f"Moved {filename} to {dst}")
+
+def move_failed_files(failed_coregs, coregistered_dir,source_dir:str):
+    """
+    Handles failed coregistration files by moving them to a 'failed_coregistration' directory within the coregistered directory.
+    Parameters:
+        failed_coregs (list): A list of filenames that failed coregistration.
+        coregistered_dir (str): The base directory containing coregistered satellite data.
+        source_dir (str): The directory containing the files to move.
+    """
+    if isinstance(failed_coregs, str):
+        failed_coregs = [failed_coregs]
+
+    failed_dir = os.path.join(coregistered_dir, 'failed_coregistration')
+    os.makedirs(failed_dir, exist_ok=True)
+
+
+    for filename in failed_coregs:
+        print(f"filenames: {filename}")
+        src = os.path.join(source_dir, filename)
+        dst = os.path.join(failed_dir, filename)
+        print(f"src: {src}")
+        print(f"dst: {dst}")
+        if os.path.exists(src):
+            if not os.path.exists(dst):
+                shutil.move(src, dst)
+                print(f"Moved {filename} to {dst}")
+
+
+def handle_failed_coregs_per_satellite(failed_coregs, coregistered_dir, copy_only=True, move_only=False):
+    """
+    Handles failed coregistration files by copying or moving them to specific directories.
+    This is specifically designed to work with CoastSat and CoastSeg sessions.
 
     Parameters:
         failed_coregs (dict): A dictionary where keys are satellite names and values are lists of filenames that failed coregistration.
@@ -76,7 +390,7 @@ def handle_failed_coregs(failed_coregs, coregistered_dir, copy_only=True, move_o
                     shutil.move(src, dst)
                     print(f"Moved {filename} to {dst}")
 
-def copy_original_to_coregistered(failed_coregs, unregistered_dir, coregistered_dir,subfolder_name = 'ms'):
+def copy_original_to_coregistered_per_satellite(failed_coregs, unregistered_dir, coregistered_dir,subfolder_name = 'ms'):
     """
     Copies the original files from the unregistered directory to the coregistered directory
     for the specified satellite.
@@ -270,7 +584,7 @@ def copy_files(filenames, folder_name: str, src_dir: str, dst_dir: str, satname:
             shutil.copy(file_path, os.path.join(dst_dir, satname, folder_name, filename))
             # print(f"Copied {filename} to {os.path.join(dst_dir, satname, folder_name)}")
 
-def copy_files_to_dir(filenames, src_dir, dst_dir):
+def copy_filenames_to_dir(filenames, src_dir, dst_dir):
     """
     Copy files from the source directory to the destination directory based on the DataFrame.
 
@@ -283,6 +597,23 @@ def copy_files_to_dir(filenames, src_dir, dst_dir):
     for file in filenames:
         # Get the path for this file
         file_path = os.path.join(src_dir, file)
+
+        if os.path.exists(file_path):
+            # Copy the file to the destination directory
+            shutil.copy(file_path, os.path.join(dst_dir, file))
+
+def copy_filepaths_to_dir(filepaths, dst_dir):
+    """
+    Copy filepaths  to the destination directory.
+
+    Args:
+        filepaths(list[str]): filepaths to copy.
+        src_dir (str): Directory path where the original files are located.
+        dst_dir (str): Directory path where the files should be copied.
+    """
+    os.makedirs(dst_dir, exist_ok=True)
+    for file_path in filepaths:
+        file = os.path.basename(file_path)
 
         if os.path.exists(file_path):
             # Copy the file to the destination directory
@@ -316,7 +647,7 @@ def copy_files_for_satellites(filenames:list[str],coreg_dir,unregistered_dir,sat
         # example metadata file: 2022-05-17-22-08-11_L9_ID_1_datetime11-04-24__04_30_52.txt
         # example ms file : 2022-04-01-21-56-37_L9_ID_1_datetime11-04-24__04_30_52_ms.tif
         meta_filenames = [f.replace('_ms.tif', '.txt') for f in filenames]
-        copy_files_to_dir(meta_filenames,meta_dir,os.path.join(coreg_dir, satname,'meta'))
+        copy_filenames_to_dir(meta_filenames,meta_dir,os.path.join(coreg_dir, satname,'meta'))
         if satname == 'S2':
             swir_dir = os.path.join(unregistered_dir, satname, 'swir')
             copy_files(filenames, 'mask', mask_dir, coreg_dir, satname)
@@ -348,7 +679,7 @@ def copy_meta_for_satellites(filenames:list[str],coreg_dir,unregistered_dir,sate
         # example metadata file: 2022-05-17-22-08-11_L9_ID_1_datetime11-04-24__04_30_52.txt
         # example ms file : 2022-04-01-21-56-37_L9_ID_1_datetime11-04-24__04_30_52_ms.tif
         meta_filenames = [f.replace('_ms.tif', '.txt') for f in filenames]
-        copy_files_to_dir(meta_filenames,meta_dir,os.path.join(coreg_dir, satname,'meta'))
+        copy_filenames_to_dir(meta_filenames,meta_dir,os.path.join(coreg_dir, satname,'meta'))
 
 
 def get_filepaths_to_folders(inputs, satname,coregistered_name:str=None):
