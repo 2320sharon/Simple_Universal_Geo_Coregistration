@@ -11,6 +11,7 @@ import matplotlib
 matplotlib.use('Agg')  # Use Agg backend for non-GUI rendering
 import matplotlib.pyplot as plt
 from coregister_class import CoregisterInterface
+import file_utilites  as file_utils
 import plotting
 import traceback
 
@@ -18,14 +19,14 @@ import traceback
 # Step 1. Set the settings
 #--------------------------
 # Settings
-WINDOW_SIZE=(256,256)
+WINDOW_SIZE=(256,256) 
 settings = {
     'max_translation': 1000,
     'min_translation': -1000,
 }
 VERBOSE = True
-matching_window_strategy = 'max_center_size'
- 
+matching_window_strategy = 'optimal_centered_window'
+
 # Pay attention to the band numbers
 # For this example I am using a planet that has the band order of [blue, green, red, nir] while the landsat scene has the band order of [red,blue,green nir, swir,]
 # For coregistration to be most effective the bands should be similar so I am using the red band from the planet image and the red band from the landsat image
@@ -79,14 +80,14 @@ print(f"result : {new_result}")
 
 print(f"len(results): {len(results)}")
 # # Save the results to the same coregistered directory
-# results = plotting.merge_list_of_dicts(results)
+results = file_utils.merge_list_of_dicts(results)
 
-# settings.update({'window_size': WINDOW_SIZE, 'template_path': template_path,'target_band': TARGET_BAND, 'template_band': TEMPLATE_BAND})
-# results['settings'] = settings
+settings.update({'window_size': WINDOW_SIZE, 'template_path': template_path,'target_band': TARGET_BAND, 'template_band': TEMPLATE_BAND})
+results['settings'] = settings
 
-# # 5. set the output path to save the transformation results
-# result_json_path = os.path.join(coregistered_directory, 'transformation_results.json')
-# with open(result_json_path, 'w') as json_file:
-#     json.dump(results, json_file, indent=4)
+# 5. set the output path to save the transformation results
+result_json_path = os.path.join(coregistered_directory, 'transformation_results.json')
+with open(result_json_path, 'w') as json_file:
+    json.dump(results, json_file, indent=4)
 
-# print(f"Saved results to: {result_json_path}")
+print(f"Saved results to: {result_json_path}")

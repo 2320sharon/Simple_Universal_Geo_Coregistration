@@ -13,6 +13,13 @@ from coastsat import SDS_preprocess
 #     failed_coregs = df[~df['filter_passed']]
 #     # 
 
+
+def merge_list_of_dicts(list_of_dicts):
+    merged_dict = {}
+    for d in list_of_dicts:
+        merged_dict.update(d)
+    return merged_dict
+
 def process_failed_coregistrations(failed_coregs, coregistered_dir, unregistered_dir,replace=False,
                                    copy_only=False, move_only=True, subfolder_name='ms'):
     """

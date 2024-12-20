@@ -144,7 +144,7 @@ def save_coregistered_results(results, satellite, WINDOW_SIZE, template_path, re
             return super(NumpyEncoder, self).default(obj)
 
     # Merge results for the current satellite
-    results[satellite] = plotting.merge_list_of_dicts(results[satellite])
+    results[satellite] = file_utils.merge_list_of_dicts(results[satellite])
 
     # Update settings and add to results
     settings.update({'window_size': WINDOW_SIZE, 'template_path': template_path})

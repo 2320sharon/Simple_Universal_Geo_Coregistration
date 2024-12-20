@@ -13,13 +13,6 @@ def contains_subdictionaries(data_dict):
     return subdict_count > 1  # Return True if there are multiple sub-dictionaries
 
 
-def merge_list_of_dicts(list_of_dicts):
-    merged_dict = {}
-    for d in list_of_dicts:
-        merged_dict.update(d)
-    return merged_dict
-
-
 def get_date_from_filename(filename):
     """
     Extracts the date from the filename in the format YYYY-MM-DD.
