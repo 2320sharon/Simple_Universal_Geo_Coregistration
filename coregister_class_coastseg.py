@@ -159,12 +159,10 @@ with open(result_json_path, 'r') as json_file:
 
 # print(f"results: {results}")
 # # 6. plot the results
-# # @todo this doesn't work if multiple satellites are used. Please update the plotting functions to handle multiple satellites.
-# plotting.create_readme(coregistered_directory, results)
 
 plotting.plot_ssim_scores(results, coregistered_directory)
-# plotting.plot_ssim_scores_dev(results, coregistered_directory)
-# plotting.plot_shifts_by_month(results, coregistered_directory)
-# plotting.plot_shift_histogram(results, coregistered_directory)
-# plotting.plot_delta_ssim_scores(results, coregistered_directory)
-# plotting.plot_coregistration_success_by_month(results, coregistered_directory)
+plotting.plot_ssim_scores_dev(results, coregistered_directory)
+plotting.plot_shifts_by_month(results, coregistered_directory)
+plotting.plot_shift_histogram(results, coregistered_directory)
+plotting.plot_delta_ssim_scores(results, coregistered_directory)
+plotting.plot_coregistration_success_by_month(results, coregistered_directory)
