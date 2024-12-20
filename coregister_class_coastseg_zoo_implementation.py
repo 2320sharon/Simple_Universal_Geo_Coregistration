@@ -144,7 +144,7 @@ def save_coregistered_results(results, satellite, WINDOW_SIZE, template_path, re
             return super(NumpyEncoder, self).default(obj)
 
     # Merge results for the current satellite
-    results[satellite] = plotting.merge_list_of_dicts(results[satellite])
+    results[satellite] = file_utils.merge_list_of_dicts(results[satellite])
 
     # Update settings and add to results
     settings.update({'window_size': WINDOW_SIZE, 'template_path': template_path})
@@ -162,25 +162,6 @@ def save_coregistered_results(results, satellite, WINDOW_SIZE, template_path, re
 
     return results_ordered
 
-def apply_shifts_to_tiffs(df,coregistered_dir,session_dir,satellites,apply_shifts_filter_passed=True):
-    """
-    Applies shifts to TIFF files based on the provided DataFrame and copies unregistered files to the coregistered directory.
-    Parameters:
-    df (pandas.DataFrame): DataFrame containing information about the files, including whether they passed filtering.
-    coregistered_dir (str): Directory where the coregistered files will be stored.
-    session_dir (str): Directory of the current session containing the original files.
-    satellites (list): List of satellite names to process.
-    apply_shifts_filter_passed (bool): If True, apply the shifts to only the files that passed the filtering. If False, apply the shifts to all files.
-    Returns:
-    None
-    """    
-    if  apply_shifts_filter_passed:
-        # Apply the shifts to the other files if they passed the filtering
-        filenames = df[df['filter_passed']==True]['filename']
-    else: # get all the filenames whether they passed the filtering or not
-        filenames = df['filename']
-
-    geo_utils.apply_shifts_for_satellites(df,filenames,coregistered_dir,session_dir,satellites)
 
 def copy_remaining_tiffs(df,coregistered_dir,session_dir,satellites,replace_failed_files=False):
     """
@@ -355,7 +336,7 @@ file_utils.process_failed_coregistrations(failed_coregs, coregistered_dir, sessi
 copy_remaining_tiffs(df,coregistered_dir,session_dir,satellites,replace_failed_files=replace_failed_files)
 
 # Copy the files (meta, swir, pan ) that passed coregistration and apply the shifts to them
-apply_shifts_to_tiffs(df,coregistered_dir,session_dir,satellites,apply_shifts_filter_passed=True)
+geo_utils.apply_shifts_to_tiffs(df,coregistered_dir,session_dir,satellites,apply_shifts_filter_passed=True)
 
 # Create jpgs for the files which passed the filtering and copy the jpgs from the files that failed the filtering
 # make sure to allow users to turn off the copying of the origianl files just in case they don't want them
