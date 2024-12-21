@@ -1,15 +1,8 @@
 # Standard library imports
 import os
-import json
-import glob
-import re
-import shutil
 import planet_to_coastseg
-import threading
-from collections import OrderedDict
 
 # Third-party library imports
-import numpy as np
 import pandas as pd
 import tqdm
 

@@ -214,7 +214,7 @@ def get_config(config_path,roi_id=None):
     return config
 
 
-def save_coregistered_config(config_path,output_dir,settings:dict):
+def save_coregistered_config(config_path,output_dir,settings:dict,new_config_path:str=""):
     #open the config.json file, modify it to save the coregistered directory as the new sitename and add the coregistered settings
     with open(config_path, 'r') as f:
         config = json.load(f)
@@ -226,7 +226,9 @@ def save_coregistered_config(config_path,output_dir,settings:dict):
         inputs.update({'sitename': config[roi_id]['sitename'] + os.path.sep + 'coregistered'})
     config.update({'coregistered_settings': settings})
 
-    new_config_path = os.path.join(output_dir, 'config.json')
+
+    if not new_config_path:
+        new_config_path = os.path.join(output_dir, 'config.json')
     # write the config to the coregistered directory
     with open(new_config_path, 'w') as f:
         json.dump(config, f, indent=4)
@@ -323,9 +325,13 @@ for satellite in tqdm.tqdm(filtered_dates_by_sat.keys(),desc='Satellites'):
 coregister_settings.update(**filter_settings)
 new_config_path = save_coregistered_config(config_path,coregistered_dir,coregister_settings)
 
+with open(result_json_path) as f:
+    results = json.load(f)
+
 # FILTER ANY OUTLIER SHIFTS
 # this creates a csv file in the same directory as the json file that contains how each file should be filtered
-output_csv_path = filters.apply_filtering(result_json_path, filter_settings)
+output_csv_path = os.path.join(coregistered_dir, 'filtered_files.csv')
+output_csv_path = filters.apply_filtering(results,output_csv_path, filter_settings)
 df = pd.read_csv(output_csv_path)
 
 # Move the files that failed the filtering to a new directory in coregistered directory
@@ -341,7 +347,7 @@ geo_utils.apply_shifts_to_tiffs(df,coregistered_dir,session_dir,satellites,apply
 # Create jpgs for the files which passed the filtering and copy the jpgs from the files that failed the filtering
 # make sure to allow users to turn off the copying of the origianl files just in case they don't want them
 
-# settings # read these from the settings section of config.json
+# read these from the settings section of config.json
 inputs  = get_config(new_config_path,roi_id) # this gets the setting for this ROI ID
 config = get_config(new_config_path)
 # rename sat_list to satname to make it work with create_coregistered_jpgs
