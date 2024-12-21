@@ -1335,6 +1335,30 @@ class CoregisterInterface:
         self.clear_temp_files()
         #@todo make sure to remove the reprojected template and target images including the file that had its dtype changed
 
+def coregister_files(tif_files, template_path, coregistered_dir, coregister_settings):
+    """
+    Coregisters a list of .tif files to a given template and saves the results in a specified directory.
+    Args:
+        tif_files (list of str): List of file paths to the .tif files to be coregistered.
+        template_path (str): File path to the template .tif file.
+        coregistered_dir (str): Directory where the coregistered files will be saved.
+        coregister_settings (dict): Dictionary of settings to be passed to the coregistration function.
+    Returns:
+        list: A list of results from the coregistration process for each file.
+    """
+    results = []
+    
+    if tif_files == []:
+        print(f"No files porvided to coregister")
+        return results
+    
+    for target_path in tqdm.tqdm(tif_files,desc=f'Coregistering files:'):
+        output_path = os.path.join(coregistered_dir, os.path.basename(target_path))
+        result = coregister_single(target_path, template_path, output_path, **coregister_settings)
+        results.append(result)
+
+    return results
+
 def coregister_single(target_path, template_path, output_path, **kwargs):
     """
     Coregisters a single image with a template image.

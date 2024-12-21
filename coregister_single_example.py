@@ -1,18 +1,9 @@
-import rasterio
-import numpy as np
 import os
-import math
 import json
-import rasterio
-import glob
-from tqdm import tqdm
-import threading
-import matplotlib
-matplotlib.use('Agg')  # Use Agg backend for non-GUI rendering
-import matplotlib.pyplot as plt
-from coregister_class import CoregisterInterface
-import plotting
 import traceback
+
+from coregister_class import CoregisterInterface
+import file_utilites  as file_utils
 
 
 # Step 1. Set the settings
@@ -20,24 +11,21 @@ import traceback
 # Settings
 WINDOW_SIZE=(256,256) 
 
-# WINDOW_SIZE=(32,32) # worse than 100,100 but still better than original
-# WINDOW_SIZE=(64,64) # works great
-# WINDOW_SIZE=(100,100) # works great looks about the same as 64,64
-# WINDOW_SIZE=(108,108) # not good
-# WINDOW_SIZE=(108,124) # looks very bad and not successful
 settings = {
-    'max_translation': 1000,
-    'min_translation': -1000,
+    'max_translation': 1000,  # max translation in meters
+    'min_translation': -1000, # min translation in meters
 }
 VERBOSE = True
+
+# Choose  a matching window strategy
+# 1. 'max_center_size' - This strategy will find the largest window that fits within the target image and the template image
+# 2. 'optimal_centered_window' - This strategy will find the largest window that fits within the target image and the template image and is centered. Only downside is that this is slow for large images
+
+
 # matching_window_strategy = 'max_center_size' #optimal_centered_window
 matching_window_strategy = 'optimal_centered_window'
 
-# Pay attention to the band numbers
-# For this example I am using a planet that has the band order of [blue, green, red, nir] while the landsat scene has the band order of [red,blue,green nir, swir,]
-# For coregistration to be most effective the bands should be similar so I am using the red band from the planet image and the red band from the landsat image
-# The red band is band 3 in the planet image (target) and band 1 in the landsat image (template)
-TARGET_BAND = 3
+TARGET_BAND = 1
 TEMPLATE_BAND = 1
 
 # Step 2. Enter the template path and target path

@@ -1,19 +1,28 @@
 # Standard library imports
 import os
 import planet_to_coastseg
-
+import tqdm
 # Third-party library imports
 import pandas as pd
-import tqdm
 
 # Internal imports
 import coregister_class
-import plotting
 import file_utilites as file_utils
 import filters
 import geo_utils
 
 # For this specific script that's meant to work with planetscope data.
+# Currently this script expects the following directory structure:
+# - All of the files are in the same directory
+#
+# sitename
+#|_20200601_183036_1048_3B_AnalyticMS_toar_clip.tif
+#|_20200601_183036_1048_3B_udm2_clip.tif
+#|_20200601_183036_1048_3B_AnalyticMS_toar_clip.tif
+#|_20200601_183036_1048_3B_AnalyticMS_toar_clip.tif
+
+
+# Eventually this script will require the following directory structure:
 # OR AT LEAST this script will require this. For now it expects the analytic tifs and udm files to be in the same directory and have the format 20200603_203636_82_1068_3B_udm2_clip.tif
 # You will need to run the preprocessing script to put all the files into the correct format
 # sitename
@@ -46,6 +55,30 @@ import geo_utils
 # 14. Copy the unregistered files to this new directory
 # 15. Update the config.json file with the coregistration settings as well as the location of the coregistered files
 
+
+def coregister_files(tif_files, template_path, coregistered_dir, coregister_settings):
+    """
+    Coregisters a list of .tif files to a given template and saves the results in a specified directory.
+    Args:
+        tif_files (list of str): List of file paths to the .tif files to be coregistered.
+        template_path (str): File path to the template .tif file.
+        coregistered_dir (str): Directory where the coregistered files will be saved.
+        coregister_settings (dict): Dictionary of settings to be passed to the coregistration function.
+    Returns:
+        list: A list of results from the coregistration process for each file.
+    """
+    results = []
+    
+    if tif_files == []:
+        print(f"No files porvided to coregister")
+        return results
+    
+    for target_path in tqdm.tqdm(tif_files,desc=f'Coregistering files:'):
+        output_path = os.path.join(coregistered_dir, os.path.basename(target_path))
+        result = coregister_class.coregister_single(target_path, template_path, output_path, **coregister_settings)
+        results.append(result)
+
+    return results
 
 # Coregistration Settings
 WINDOW_SIZE=(64,64)
@@ -90,7 +123,7 @@ tif_files = file_utils.get_matching_files(session_dir, 'tif','AnalyticMS')
 
 
 # # coregister all the tif files for this satellite
-results = coregister_class.coregister_files(tif_files, template_path,coregistered_dir, coregister_settings)
+results = coregister_files(tif_files, template_path,coregistered_dir, coregister_settings)
 
 results = file_utils.merge_list_of_dicts(results)
 
@@ -114,15 +147,12 @@ file_utils.move_failed_files(failed_coregs,coregistered_dir,session_dir,)
 
 # Copy the cloud masks
 cloud_masks=file_utils.get_matching_files(session_dir, 'tif', 'udm2')
-print(f"cloud_masks: {cloud_masks}")
 # Filter out any cloud masks that do not exist in the coregistered directory
 ms_files = file_utils.get_matching_files(coregistered_dir, 'tif', 'AnalyticMS')
-print(f"ms_files: {ms_files}")
 
-#r"^\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}"
-planet_pattern = r"^\d{8}_\d{6}_\d{4}"
+#r"^\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}" # This is the coastsat format
+planet_pattern = r"^\d{8}_\d{6}_\d{4}" # This is the pattern for the date in the planet file name by default
 cloud_masks = [cloud_mask for cloud_mask in cloud_masks if file_utils.extract_date_from_filename(cloud_mask,pattern=planet_pattern) in [file_utils.extract_date_from_filename(ms_file,pattern=planet_pattern) for ms_file in ms_files]]
-print(f"cloud_masks: {cloud_masks}")
 
 # copy the cloud masks to the coregistered directory
 file_utils.copy_filepaths_to_dir(cloud_masks, coregistered_dir)
