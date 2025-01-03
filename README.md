@@ -56,6 +56,39 @@ target_path =r"C:\development\doodleverse\coastseg\CoastSeg\data\ID_1_datetime08
    - The coregistered image will be saved to 'coregistered' directory
    - A json file called `transformation_results.json` will be saved to the same directory.
 
+## Example #2 Coregister a PlanetScope scene to a Landsat Scene
+Script : `coregister_single_planet_example.py`
+
+In this example, a planetscope scene that has a pixel resolution of 3 meters per pixel will be registered to a landsat 8 scene that has a pixel resolution of 15 meters per pixel. The landsat scene has the band order `R G B` and the planetscope scene has the band order `B G R NIR`. Because the landsat scene and the target scene, the planetscope scene, have their `R`ed bands at different locations we will set the `TARGET_BAND` and `TEMPLATE_BAND` to `3` and `1` respectively to ensure the Red band of each scene is coregistered together.
+
+Behind the scenes the planetscope image will be reprojected and resampled to have the same resolution, size, and CRS as the landsat scene. This means it will be resampled to have a pixel resolution of 15 meters per pixel to match the landsat scene. If this is not performed then the estimated shifts will be incorrect since all shifts are calculated relative to the template image's pixel resolution in meters.
+
+1. Open the file `coregister_single_planet_example.py`
+2. Modify the settings in the script
+```
+settings = {
+    'max_translation': 1000,  # max translation in meters
+    'min_translation': -1000, # min translation in meters
+}
+```
+3. Edit the `TARGET_BAND` and `TEMPLATE_BAND` to the band number to coregister both images to.
+```
+TARGET_BAND = 3  # Planetscope has the Red band at the 3rd spot (rasterio starts index from index 1)
+TEMPLATE_BAND = 1
+```
+4. Enter the locations to the template and target images.
+  - Replace the existing paths with the locations of your files
+  - `template_path` : This is the tiff file that you want to coregister the target to
+  - `target_path` : This is the tiff file that you want to coregister to the template
+```
+template_path = r""
+target_path =r""
+
+```
+5. Run the script and the target image will be coregistered to the template image.
+   - The coregistered image will be saved to 'coregistered' directory
+   - A json file called `transformation_results.json` will be saved to the same directory.
+
 
 ## How to Use on a dataset
 1. Initialize a `CoregisterInterface` class instance for each image.
