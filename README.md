@@ -25,6 +25,38 @@ This method works by initially providing a template/reference tif that will be u
 2. **Navigate to the tool directory:** `cd Simple_Universal_Coregistration`
 3. **Install dependencies:** `pip install -r requirements.txt`
 
+# Getting Started
+
+## Example #1 Coregister a Single Image
+Script : `coregister_single_example.py`
+
+1. Open the file `coregister_single_example.py`
+2. Modify the settings in the script
+```
+settings = {
+    'max_translation': 1000,  # max translation in meters
+    'min_translation': -1000, # min translation in meters
+}
+```
+3. Edit the `TARGET_BAND` and `TEMPLATE_BAND` to the band number to coregister both images to.
+```
+TARGET_BAND = 1
+TEMPLATE_BAND = 1
+```
+4. Enter the locations to the template and target images.
+  - Replace the existing paths with the locations of your files
+  - `template_path` : This is the tiff file that you want to coregister the target to
+  - `target_path` : This is the tiff file that you want to coregister to the template
+```
+template_path = r"C:\development\doodleverse\coastseg\CoastSeg\data\ID_1_datetime08-14-24__11_57_56\L9\ms\2024-04-06-18-46-04_L9_ID_1_datetime08-14-24__11_57_56_ms.tif"
+target_path =r"C:\development\doodleverse\coastseg\CoastSeg\data\ID_1_datetime08-14-24__11_57_56\S2\ms\2023-07-13-19-04-28_S2_ID_1_datetime08-14-24__11_57_56_ms.tif"
+
+```
+5. Run the script and the target image will be coregistered to the template image.
+   - The coregistered image will be saved to 'coregistered' directory
+   - A json file called `transformation_results.json` will be saved to the same directory.
+
+
 ## How to Use on a dataset
 1. Initialize a `CoregisterInterface` class instance for each image.
 2. Ensure template and target images from different sources have matching `target_band` and `template_band`.
