@@ -2,44 +2,55 @@
 
 ⚠️This tool is still under active development and the documentation is unfinished. Not ready for operational usage.⚠️
 
-A simple coregistration tool that uses phase cross correlation to determine the shift to match two geospatial images. 
+A simple coregistration tool that uses phase cross correlation to determine the shift to match two geospatial images.
 
-## This method works by:
-1. Taking a template image and a target image and determining if they overlap
-2. The target or template is reprojected to the tiff with the lowest resolution.
-3. The target or template has its data type modified to match the tiff with the largest data type.
-4. If these do overlap and `matching_window_strategy` is set to `max_center_size` a window is created of `window_size` at the center of the overlap
-5. Both the target and template are cropped to this matching window
-6. The target is histogram matched to the template
-7. The phase_cross_correlation function is run to identify the shift within 1/100 pixels
-8. Quality control is applied to filter out shifts larger than the min and max translation 
-9. The target tiff is copied and shifted by the detected shifts
+## How it Works
+This method works by initially providing a template/reference tif that will be used as the source of truth to coregister the target images to. Make sure the template image does not contain excessive cloud cover, fog, or no data pixels as these will negatively impact the results.
 
-## How to use on a dataset
-1. Create a coregisterinterface class for each image
-3. Correct coregister on batches of one satellite type at a time
-- Make sure if your template and target come from different sources that the `target_band` and `template_band` match
-3. Run a post processing script to filter out any outlier shifts (function coming soon)
+1. **Overlap Detection:** Identify if the template image and target image overlap.
+2. **Reprojection:** Reproject the target or template image to match the resolution of the tiff with the lowest resolution.
+3. **Data Type Adjustment:** Modify the data type of the target or template to match the tiff with the largest data type.
+4. **Matching Window:** If overlapping, create a window of `window_size` in the overlapping region. The location of the window will vary depending on the matching window strategy selected.
+5. **Image Cropping:** Crop both the target and template to the matching window.
+6. **Histogram Matching:** Adjust the target image's histogram to match that of the template.
+7. **Shift Detection:** Run the phase_cross_correlation function to identify the shift within 1/100 pixels.
+8. **Quality Control:** Apply filters to remove shifts exceeding predefined minimum and maximum translation limits.
+9. **Image Shifting:** Copy and shift the target tiff by the detected shifts.
+
+# Installation and Usage
+
+### Basic Setup
+
+1. **Clone the repository:** `git clone https://github.com/<your-username>/Simple_Universal_Coregistration.git`
+2. **Navigate to the tool directory:** `cd Simple_Universal_Coregistration`
+3. **Install dependencies:** `pip install -r requirements.txt`
+
+## How to Use on a dataset
+1. Initialize a `CoregisterInterface` class instance for each image.
+2. Ensure template and target images from different sources have matching `target_band` and `template_band`.
+3. Run coregistration in batches by satellite type.
+4. Execute post-processing scripts to filter out outlier shifts.
 
 ## Settings
-- Window Size: Max size of the window to determine coregistration within. Defaults to 100,100
+
+- **Window Size:**  Max size of the window to determine coregistration within. Default is `(256,256)`.
   - This is the size of the region that both the target image ( image to coregister) and the reference image ( image to use a reference to coregister) will be cropped to
   - Make sure that this value is even and ensure that it is large enough to capture important feature for coregistration.
-- Matching Window Strategy
-  -   1.  `max_center_size` : Finds the largest possible window at the center of the overlap. (default)
-  -   2. `use_predetermined_window_size`; Finds the window of window size at the first avaiable location by sliding a window across the overlap region.
-- min_window_size : Smallest window size that can be used to perform coregistration default to (64,64)
-- gaussian_weights : Whether to use Gaussian weights for SSIM
-   - This puts more weight on the features at the center of the image
-- target_band : The target's band number that should be used to coregister. Default is 1
+- **Matching Window Strategy:** 
+  - `max_center_size` (default): Finds the largest possible window at the center.
+  - `use_predetermined_window_size`: Uses a predefined window size, sliding across the overlap until a fit is found.
+  - `optimal_centered_window`: Finds all the possible windows in the region of overlap then selects the window that is cloest to center and the largest.
+      This is a fallback method that is very slow but reliable. 
+- **Minimum Window Size(min_window_size):** Smallest permissible window size `(64,64)`.
+- **Gaussian Weights(gaussian_weights):** Applies more weight to central features, improving focus during matching.
+  - Whether to use Gaussian weights for SSIM calculations
+- **target_band:** The target's band number that should be used to coregister. Default is 1
     -   Make sure the target band and template band point to the same type of band. For example target band 1 is red and template band 3 is red.
-- template_band: The template's band number that should be used to coregister. Default is 1
-- settings:
+- **template_band:** The template's band number that should be used to coregister. Default is 1
+- **settings:**
   -   1. max_translation (float): Maximum translation (in meters) allowed for coregistration. Defaults to 1000m.
   -   2. min_translation (float): Minimum translation (in meters) allowed for coregistration. Defaults to -1000m.
-            
-
-- <todo explain rest of settings>
+  
 
 # Coregistration Result
 - Result of each individual coregistraion is stored in `CoregisterInterface().coreg_info`
