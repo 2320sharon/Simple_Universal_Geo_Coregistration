@@ -61,7 +61,7 @@ Script : `coregister_single_planet_example.py`
 
 In this example, a planetscope scene that has a pixel resolution of 3 meters per pixel will be registered to a landsat 8 scene that has a pixel resolution of 15 meters per pixel. The landsat scene has the band order `R G B` and the planetscope scene has the band order `B G R NIR`. Because the landsat scene and the target scene, the planetscope scene, have their `R`ed bands at different locations we will set the `TARGET_BAND` and `TEMPLATE_BAND` to `3` and `1` respectively to ensure the Red band of each scene is coregistered together.
 
-Behind the scenes the planetscope image will be reprojected and resampled to have the same resolution, size, and CRS as the landsat scene. This means it will be resampled to have a pixel resolution of 15 meters per pixel to match the landsat scene. If this is not performed then the estimated shifts will be incorrect since all shifts are calculated relative to the template image's pixel resolution in meters.
+Behind the scenes the planetscope image will be reprojected and resampled to have the same resolution, size, and CRS as the landsat scene. This means it will be resampled to have a pixel resolution of 15 meters per pixel to match the landsat scene. If this is not performed then the estimated shifts will be incorrect since all shifts are calculated relative to the template image's pixel resolution in meters. The final coregistered image will be in the original resolution, since the shifts are applied to the original images.
 
 1. Open the file `coregister_single_planet_example.py`
 2. Modify the settings in the script
