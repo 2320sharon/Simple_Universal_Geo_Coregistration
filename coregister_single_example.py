@@ -15,7 +15,7 @@ settings = {
     'max_translation': 1000,  # max translation in meters
     'min_translation': -1000, # min translation in meters
 }
-VERBOSE = True
+VERBOSE = False # Set this to True to see the debug information during coregistration
 
 # Choose  a matching window strategy
 # 1. 'max_center_size' - This strategy will find the largest window that fits within the target image and the template image
@@ -31,7 +31,7 @@ TEMPLATE_BAND = 1
 # Step 2. Enter the template path and target path
 #-------------------------------------------------
 # template path 
-# - This is the tiff file that you want to coregister to
+# - This is the tiff file that you want to coregister the target file to
 # - Ensure this file has accurate georeferencing (such as a Landsat scene) at the SAME location as the target image
 
 # Target path
@@ -39,10 +39,9 @@ TEMPLATE_BAND = 1
 
 template_path = r"C:\development\doodleverse\coastseg\CoastSeg\data\ID_1_datetime08-14-24__11_57_56\L9\ms\2024-04-06-18-46-04_L9_ID_1_datetime08-14-24__11_57_56_ms.tif"
 target_path =r"C:\development\doodleverse\coastseg\CoastSeg\data\ID_1_datetime08-14-24__11_57_56\S2\ms\2023-07-13-19-04-28_S2_ID_1_datetime08-14-24__11_57_56_ms.tif"
-target_path = target_path.replace(".tif", "_new_crs.tif") # this is the file with the same crs as the template
 
 # output directory to save the coregistered images
-coregistered_directory = os.path.join(os.getcwd(), 'coregistered_santa_cruz')
+coregistered_directory = os.path.join(os.getcwd(), 'coregistered')
 os.makedirs(coregistered_directory, exist_ok=True)
 print(f"Coregistered imagery will be saved to : {coregistered_directory}")
 
@@ -63,6 +62,7 @@ try:
         }
     else:
         coreg.coregister()
+        print(f"Saved the coregistered image to: {output_path}")
 except Exception as e:
     print(f"Error: {e}")
     traceback.print_exc()
@@ -72,10 +72,6 @@ new_result = {
 }
 results.append(new_result)
 
-print(f"result : {new_result}")
-
-
-print(f"len(results): {len(results)}")
 # # Save the results to the same coregistered directory
 results = file_utils.merge_list_of_dicts(results)
 
@@ -87,4 +83,4 @@ result_json_path = os.path.join(coregistered_directory, 'transformation_results.
 with open(result_json_path, 'w') as json_file:
     json.dump(results, json_file, indent=4)
 
-print(f"Saved results to: {result_json_path}")
+print(f"Saved the coregistration results to: {result_json_path}")

@@ -776,6 +776,9 @@ class CoregisterInterface:
                    - It starts with the initial window size at the center of the overlap and shrinks until it finds a matching window or the minimum window size is reached.
                 2. use_predetermined_window_size: 
                     uses the window size provided in the window_size parameter. Starts from the corner of the image until it finds a matching window of the specified size
+                3. optimal_centered_window:
+                    Finds all the possible windows in the region of overlap then selects the window that is cloest to center and the largest.
+                    This is a fallback method that is very slow but reliable. 
             min_window_size (tuple, optional): Minimum window size for coregistration. Defaults to (24, 24).
 
         """
